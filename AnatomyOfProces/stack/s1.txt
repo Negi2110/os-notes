@@ -1,0 +1,72 @@
+This set of snapshots captures the most critical part of C++ memory management: **The Stack Frame**. Understanding how the Stack, Base Pointer, and Stack Pointer dance together is what allows you to visualize recursion, function calls, and the dreaded "Stack Overflow."
+
+Here is a structured summary of these diagrams to help you master the mental model without needing the images.
+
+---
+
+## **1. The Stack: A Growing Data Structure**
+The Stack is a "last-in, first-out" (LIFO) structure managed automatically by the CPU.
+* **Direction:** It grows from **high memory addresses to low memory addresses** (downward). 
+* **The Stack Frame:** Every time a function is called, it gets its own "box" called a **frame**. This frame holds the function's local variables (like `int a`, `int b`).
+* **Lifespan:** Variables on the stack "die" as soon as the function returns.
+
+---
+
+## **2. The Two Primary CPU Registers**
+To manage this growing stack, the CPU uses two key "fingers" (pointers):
+
+### **A. The Stack Pointer (SP)**
+* **Function:** Points to the **absolute end** (the current "top") of the stack.
+* **Movement:** When you allocate a new variable, the SP moves down (e.g., `SP = SP - 4` for an integer). When a function ends, the SP moves back up (deallocation).
+* **Problem:** The SP is constantly moving as you add/remove variables, so it's a "shaky" reference.
+
+### **B. The Base Pointer (BP / Frame Pointer)**
+* **Function:** Acts as a **fixed reference point** for the current function's frame.
+* **Consistency:** While the SP moves around, the BP stays at the start of the frame.
+* **Usage:** To find variable `b`, the CPU doesn't ask "Where is the end of the stack?" It asks "Where is the BP?" and then looks 4 bytes below it (`BP - 4`).
+
+---
+
+## **3. Nested Calls: The "Save & Restore" Mechanism**
+When `main` calls `func1`, the CPU has a problem: it needs to move the BP to `func1`, but it must remember where `main`'s BP was so it can return home later.
+
+### **The "Prologue" (Setting up `func1`)**
+1.  **Save Old BP:** The CPU pushes the **current BP (main's BP)** onto the stack. This is the "Old BP" entry in your diagram.
+2.  **Move BP:** The BP now jumps down to point to the start of `func1`'s new frame.
+3.  **Allocate Space:** The SP moves down further to make room for `func1`'s local variables (`int x`, `int y`).
+
+
+---
+
+## **4. The Return Address: "How do I get back?"**
+Your diagrams introduce a third crucial piece of data: the **Return Address**.
+* **Definition:** This is the address of the next instruction in `main` that needs to run after `func1` finishes.
+* **Storage:** It is stored on the stack (or in the **Link Register / LR** on some CPUs). 
+* **Restoration:** When `func1` hits `return`, the CPU pops this address off the stack and puts it into the **Program Counter (PC)**. 
+
+---
+
+## **5. The "Epilogue" (Returning from `func1`)**
+When `func1` returns, the CPU cleans up the mess:
+1.  **Set SP Back:** The SP moves back up to the BP. This effectively "deallocates" all local variables (`x`, `y`) instantly.
+2.  **Restore BP:** The CPU pops the "Old BP" from the stack back into the BP register. Now the BP is pointing at `main`'s frame again.
+3.  **Jump Back:** The CPU uses the Return Address to jump the PC back to the correct line in `main`.
+
+---
+
+## **Summary for your Notes**
+
+| Register/Value | Role in the "Dance" |
+| :--- | :--- |
+| **Stack Pointer (SP)** | The "Current Tip." Moves with every push/pop. |
+| **Base Pointer (BP)** | The "Fixed Anchor." Provides a stable base to find local variables. |
+| **Old BP** | The "Breadcrumb." Saved on the stack so we can restore the caller's frame. |
+| **Return Address** | The "GPS Coordinate." Tells the PC where to go when the function is over. |
+
+### **Visualization Tip for Interviews:**
+When you see a function call in C++, visualize the stack like a **tower of bricks**. 
+* A new function call is a new brick being added to the bottom. 
+* The **BP** is the top of the *new* brick. 
+* Inside that brick, we hide a secret note (**Old BP**) telling us where the *previous* brick's top was. 
+* When we're done, we throw the bottom brick away and use the note to find our way back up.
+

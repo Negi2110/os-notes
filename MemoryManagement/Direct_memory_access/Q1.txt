@@ -1,0 +1,207 @@
+That's the header row of the **`top` command** in Linux. Here's what each column means:
+
+---
+
+### Column by Column
+
+```
+PID      Process ID
+         Unique number the OS assigns to every running process.
+
+USER     Which user owns/started this process.
+
+PR       Priority
+         Actual scheduling priority the kernel uses.
+         Lower number = higher priority = gets CPU first.
+
+NI       Nice value
+         User-set priority hint. Range: -20 (highest) to +19 (lowest).
+         PR is calculated from NI.
+         You set NI. Kernel decides PR.
+
+VIRT     Virtual memory size
+         Total virtual address space claimed by the process.
+         Includes everything mapped: code, heap, stack, libraries.
+         Most of it may not be in RAM yet.
+
+RES      Resident memory
+         Actual physical RAM the process is using RIGHT NOW.
+         This is the real number that matters.
+         VIRT is a lie. RES is the truth.
+
+SHR      Shared memory
+         Portion of RES that is shared with other processes.
+         e.g. libc loaded once, shared by many.
+
+S        State
+         R = Running
+         S = Sleeping (waiting for I/O or event)
+         D = Uninterruptible sleep (waiting on disk)
+         Z = Zombie (dead but not cleaned up)
+         T = Stopped
+
+%CPU     CPU usage percentage right now.
+
+%MEM     Percentage of physical RAM this process is using.
+
+TIME+    Total CPU time consumed since process started.
+         Cumulative. Not wall clock time.
+
+COMMAND  Name of the program/process.
+```
+
+---
+
+### The Most Important Ones for Interviews
+
+```
+RES vs VIRT:
+  VIRT is how much virtual space a process CLAIMS.
+  RES  is how much RAM it actually USES right now.
+  A process can claim 10GB virtual but only use 100MB real RAM.
+  Always look at RES for memory pressure.
+
+S (state):
+  D state (uninterruptible sleep) is dangerous.
+  Process stuck waiting on disk/kernel.
+  Cannot be killed. Cannot be interrupted.
+  Many D state processes = I/O bottleneck.
+
+%MEM:
+  RES as percentage of total physical RAM.
+  If one process has 80%+ → memory hog → likely causing swapping.
+
+
+
+  
+```## VIRT vs RES — In C++ Terms
+
+---
+
+### Claiming Without Using (VIRT goes up, RES stays)
+
+```cpp
+// CLAIM 1 — new without touching
+int* arr = new int[1'000'000];
+// VIRT += 4MB
+// RES  = same   ← no physical RAM yet
+//                  OS just reserved virtual address space
+
+// CLAIM 2 — vector reserve
+std::vector<int> v;
+v.reserve(1'000'000);
+// VIRT += 4MB
+// RES  = same   ← capacity reserved, no elements written
+
+// CLAIM 3 — memory mapped file
+std::ifstream file("huge_file.bin");
+// VIRT += file size
+// RES  = same   ← file mapped but not read yet
+```
+
+---
+
+### Actually Using (RES goes up)
+
+```cpp
+// USE 1 — write to the array
+arr[0] = 42;         // page fault → OS maps first 4KB page
+arr[1000] = 42;      // page fault → OS maps next page
+// RES goes up by 4KB per page touched
+
+// USE 2 — push_back into vector
+v.push_back(1);      // now writing → pages get mapped
+v.push_back(2);      // RES increases as pages are touched
+
+// USE 3 — actually read the file
+char buf[4096];
+file.read(buf, 4096); // NOW the page is loaded into RAM
+// RES goes up by 4KB
+```
+
+---
+
+### Smart Pointers — Same Rule
+
+```cpp
+// unique_ptr — VIRT up, RES same until touched
+auto ptr = std::make_unique<std::array<int, 1'000'000>>();
+// virtual space reserved
+
+(*ptr)[0] = 1;  // NOW RES goes up
+                // page fault on first touch
+                // OS maps physical page
+
+// shared_ptr — same behaviour
+auto sptr = std::make_shared<std::vector<int>>(1'000'000);
+// VIRT up
+
+sptr->at(0) = 1;  // RES goes up
+```
+
+---
+
+### STL Containers — The Hidden VIRT
+
+```cpp
+std::vector<int> v;
+v.reserve(10'000'000);    // VIRT += 40MB,  RES unchanged
+
+std::string s;
+s.reserve(1'000'000);     // VIRT += 1MB,   RES unchanged
+
+std::unordered_map<int,int> m;
+m.reserve(1'000'000);     // VIRT += ~50MB, RES unchanged
+
+// None of the above use real RAM yet.
+// As soon as you INSERT or WRITE:
+v.push_back(1);           // RES starts climbing
+m[1] = 1;                 // RES starts climbing
+```
+
+---
+
+### The Destructor — When RAM is Released
+
+```cpp
+{
+    auto ptr = std::make_unique<int[]>(1'000'000);
+    ptr[0] = 1;     // RES goes up (page mapped)
+    ptr[500] = 1;   // RES goes up again
+}
+// destructor called here
+// delete[] fires
+// OS unmaps physical pages
+// RES goes down
+// VIRT goes down
+```
+
+---
+
+### What You See in top
+
+```
+COMMAND    VIRT    RES
+────────────────────────────────────────
+myapp      500MB   50MB
+
+Means:
+  App did new/reserve for 500MB total.
+  Only 50MB was actually written/read.
+  450MB is reserved virtual space sitting empty.
+  450MB costs you NOTHING in physical RAM.
+
+This is normal and expected in C++.
+STL containers over-allocate by design
+(vector doubles capacity, etc.)
+```
+
+---
+
+### One-Line Rule
+
+```
+new/reserve/make_unique  → VIRT goes up (free, just address space)
+first write/read         → page fault → RES goes up (real RAM used)
+destructor/delete        → both go down
+```

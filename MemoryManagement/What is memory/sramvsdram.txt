@@ -1,0 +1,136 @@
+## Why SRAM is Fast and DRAM is Slow — From First Principles
+
+---
+
+### Start here: what does "reading a bit" actually mean?
+
+```
+To read a stored bit, you need to answer one question:
+"Is there a 1 or a 0 here right now?"
+
+How fast you can answer that question = how fast the memory is.
+```
+
+---
+
+### SRAM — the answer is always sitting there
+
+```
+6 transistors are actively FIGHTING each other right now.
+One side is winning (outputting HIGH).
+One side is losing (outputting LOW).
+
+To read: just ask "which side is winning?"
+The answer is INSTANT. The state is always live.
+
+Analogy:
+  Two people arm wrestling, frozen mid-fight.
+  You can tell instantly who is stronger just by looking.
+  No waiting. The answer is visible right now.
+```
+
+---
+
+### DRAM — the answer is hidden inside a leaking bucket
+
+```
+A capacitor is just a tiny bucket that holds charge.
+Full bucket = 1.   Empty bucket = 0.
+
+Problem 1 — reading destroys the data:
+  To check if the bucket is full, you have to POUR IT OUT
+  and measure what comes out.
+  Now the bucket is empty. You have to refill it.
+  That refill step = extra time.
+
+Problem 2 — the bucket leaks on its own:
+  Even if nobody reads it, the bucket slowly drains.
+  After ~64ms it's empty regardless of what was stored.
+  So you have to periodically pour it out and refill it
+  just to keep the data alive. That's the refresh cycle.
+  During refresh = bucket is being handled = unavailable.
+
+Analogy:
+  DRAM is like asking "is this cup full?"
+  but the only way to check is to drink it,
+  then refill it, then put it back.
+  And someone keeps slowly stealing water from every cup
+  so you have to refill all of them every 64ms anyway.
+```
+
+---
+
+### Side by side
+
+```
+SRAM                          DRAM
+──────────────────────────    ──────────────────────────
+State is always visible       State is hidden in a bucket
+Read = just look              Read = drain → measure → refill
+Nothing extra needed          Write-back mandatory after every read
+Bucket never leaks            Bucket leaks every 64ms
+Fast                          Slow
+```
+
+---
+
+### The one thing to remember
+
+```
+SRAM is fast because the answer is always live.
+DRAM is slow because reading destroys the answer,
+and the answer is also slowly disappearing on its own.
+```
+
+
+
+## SRAM vs DRAM — Interview Answers
+
+---
+
+**"Why is SRAM faster than DRAM?"**
+```
+SRAM stores bits using 6 transistors wired in a stable loop —
+the state is always live and readable instantly.
+DRAM stores bits in a capacitor — reading it drains the charge,
+so every read requires a mandatory write-back, adding latency.
+```
+
+---
+
+**"Why does DRAM need refresh?"**
+```
+Capacitors leak charge over time and lose their data in ~64ms.
+The memory controller must periodically read and rewrite every row
+to prevent data loss — during which those rows are unavailable.
+```
+
+---
+
+**"Why don't we just use SRAM for everything?"**
+```
+SRAM needs 6 transistors per bit vs DRAM's 1.
+That means 6× the chip area and 6× the cost for the same capacity.
+A 16GB SRAM system would be physically enormous and cost thousands.
+DRAM gives you large, cheap memory — you just pay in latency.
+```
+
+---
+
+**"Why is DRAM read destructive?"**
+```
+Reading opens the capacitor onto the bitline, which drains its charge.
+The sense amplifier detects the voltage, but the bit is now gone.
+The controller must write it back immediately or the data is lost.
+```
+
+---
+
+### One-line versions (if they push for brevity)
+
+```
+SRAM fast?        → State is always live in transistors. Read = just look.
+DRAM slow?        → Reading destroys the bit. Write-back is mandatory.
+DRAM refresh?     → Capacitors leak. Data dies in 64ms without a top-up.
+Why not all SRAM? → 6× transistors per bit = too expensive, too large.
+```

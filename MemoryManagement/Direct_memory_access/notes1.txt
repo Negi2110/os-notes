@@ -1,0 +1,228 @@
+# DMA — Master Notes (Clean Format)
+
+---
+
+## 0. The Core Idea
+
+```
+Without DMA:  Peripheral → CPU → RAM
+With DMA:     Peripheral → RAM  (CPU just watches)
+
+CPU is expensive. Wasting it on copying bytes is like
+using a surgeon to carry boxes.
+DMA is the box-carrier. CPU does the real work.
+```
+
+---
+
+## 1. The Problem Without DMA
+
+```
+Every byte from disk/network must pass through CPU:
+
+  Network card gets data
+  → CPU interrupt fires
+  → CPU reads byte from network card register
+  → CPU writes byte to RAM
+  → repeat for every single byte
+
+For 1GB file transfer:
+  CPU is stuck in a copy loop the entire time.
+  Cannot run your application.
+  Cannot handle other requests.
+  Pure waste.
+
+Small data (keyboard, mouse): fine, CPU handles it fast.
+Large data (disk, network):   CPU becomes the bottleneck.
+```
+
+---
+
+## 2. How DMA Solves It
+
+```
+Step 1 — CPU programs the DMA controller (one-time setup):
+  "Copy from network card buffer
+   to physical address 0x5000000
+   size 4096 bytes"
+
+Step 2 — DMA controller takes over:
+  Moves data directly peripheral → RAM
+  CPU is completely free
+  CPU runs your application in parallel
+
+Step 3 — DMA signals done:
+  Sends interrupt to CPU
+  CPU spends ~1µs handling interrupt
+  Data is in RAM, ready to use
+
+  Peripheral          DMAC              RAM
+  ┌──────────┐       ┌──────┐          ┌──────┐
+  │ Network  │──────→│ DMA  │─────────→│ RAM  │
+  │ card     │       │ ctrl │          └──────┘
+  └──────────┘       └──────┘
+                        ↕
+                       CPU
+                  (setup + interrupt only)
+```
+
+---
+
+## 3. DMA Must Use Physical Addresses
+
+```
+Why physical addresses?
+  DMA controller has NO MMU.
+  It cannot understand virtual addresses.
+  It talks directly to the memory bus.
+  Memory bus only knows physical addresses.
+
+Consequences:
+  Kernel must pin the buffer in RAM (mlock)
+  Buffer must NOT be swapped to disk mid-transfer
+  If OS swaps buffer out while DMA is writing to it:
+    → DMA writes to wrong physical location
+    → memory corruption
+    → silent data loss or crash
+
+  Kernel gives DMA the PHYSICAL address of the pinned buffer.
+  That address must stay valid for the entire transfer.
+```
+
+---
+
+## 4. IOMMU — Virtual DMA
+
+```
+Problem with raw DMA:
+  DMA controller can access ANY physical address.
+  Malicious or buggy device → reads/writes anything in RAM.
+  Including kernel memory, other processes' memory.
+  This is a DMA attack.
+
+IOMMU fixes this:
+  Sits between DMA controller and memory bus.
+  Gives each device its own address space.
+  Device can only access what OS explicitly permits.
+  Everything else → access denied.
+
+  Device → IOMMU → physical RAM
+           (translates + enforces permissions)
+
+Used in:
+  Virtualisation (VT-d Intel, AMD-Vi)
+  Preventing Thunderbolt DMA attacks
+  GPU memory management
+```
+
+---
+
+## 5. O_DIRECT — DMA Straight to User Space
+
+```
+Normal file read (WITHOUT O_DIRECT):
+  Disk → DMA → kernel page cache → memcpy → user buffer
+  TWO copies. Page cache is the middleman.
+
+With O_DIRECT:
+  Disk → DMA → user buffer directly
+  ONE copy. Page cache completely bypassed.
+
+Why databases use O_DIRECT:
+  PostgreSQL, MySQL, Oracle manage their OWN buffer cache.
+  Letting OS also cache the same data = double caching.
+  Double caching = RAM wasted on duplicates.
+  O_DIRECT gives database full control.
+  Database decides what to cache, not the OS.
+
+PostgreSQL WAL example:
+  wal_sync_method = open_datasync
+  → WAL files written with O_DIRECT flag
+  → bypasses page cache
+  → goes straight to disk via DMA
+  → kernel knows write hit physical media
+  → safe to call transaction committed
+```
+
+---
+
+## 6. Cache Coherency Problem
+
+```
+CPU has L1/L2/L3 cache.
+DMA writes to RAM directly — does NOT go through CPU cache.
+
+Problem:
+  CPU cached address 0x5000 = old value
+  DMA writes new value to physical address 0x5000
+  CPU reads address 0x5000 → gets STALE cached value
+  Not the new DMA data
+
+Solutions:
+  x86:   hardware cache snooping — automatic, transparent
+  ARM:   driver must manually invalidate cache lines
+         before reading DMA result
+
+This is why DMA drivers are hard to write correctly.
+One missed cache invalidation = silent data corruption.
+```
+
+---
+
+## 7. When NOT to Use DMA
+
+```
+DMA has setup overhead (~microseconds to program the controller).
+For tiny transfers this overhead exceeds the benefit.
+
+Use DMA for:              Don't use DMA for:
+─────────────────────     ──────────────────────
+Disk reads/writes         Keyboard input
+Network packets           Mouse events
+Audio/video streaming     Serial port (low volume)
+GPU transfers             Any small/infrequent data
+Large memory copies
+
+Rule of thumb:
+  Transfer > a few KB   → DMA wins
+  Transfer < a few KB   → CPU direct is faster
+```
+
+---
+
+## 8. Pros and Cons
+
+```
+PROS:
+  CPU freed during transfer     → runs real work in parallel
+  Higher throughput             → DMAC + CPU work simultaneously
+  Less CPU overhead             → no copy loop in kernel
+  Efficient for large transfers → disk, network, GPU
+
+CONS:
+  Physical addresses only       → pinned buffers, no swap
+  Security risk                 → DMAC can access any RAM (need IOMMU)
+  Cache coherency               → stale CPU cache after DMA write
+  Setup cost                    → not worth it for small transfers
+  Complex drivers               → easy to get wrong silently
+  No use for interrupts         → keyboard/mouse better without DMA
+```
+
+---
+
+## 9. One-Line Interview Answers
+
+**"What is DMA?"**
+A hardware mechanism where a dedicated controller moves data between peripherals and RAM without CPU involvement — CPU sets it up, DMA does the work, CPU gets an interrupt when done.
+
+**"Why does DMA need physical addresses?"**
+The DMA controller has no MMU — it talks directly to the memory bus which only understands physical addresses, so the kernel must pin the buffer in RAM and provide its physical location.
+
+**"What is O_DIRECT?"**
+A flag that bypasses the OS page cache, sending data directly from disk to user-space buffer via DMA — used by databases that manage their own caching to avoid double-caching the same data.
+
+**"What is a DMA attack?"**
+A device connected via DMA-capable port (Thunderbolt/PCIe) reads or writes arbitrary physical RAM, bypassing OS security entirely — mitigated by IOMMU which restricts what addresses each device can access.
+
+**"Why can't DMA be used for keyboard input?"**
+DMA setup overhead costs more than just having the CPU handle a few bytes directly — DMA is only beneficial for large, sequential, high-throughput transfers where the setup cost is amortised.

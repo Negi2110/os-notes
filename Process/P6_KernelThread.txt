@@ -1,0 +1,50 @@
+This final diagram is the **"Grand Central Station"** of thread management. It shows exactly how the Kernel tracks multiple execution paths (Threads) belonging to the same application (Process).
+
+For your notes and interview prep, here is the breakdown of how these components interlock.
+
+---
+
+## **1. The Kernel Thread Table: The Master Index**
+Just like the Process Table we discussed earlier, the **Thread Table** lives in the protected **Kernel Space**.
+* **The Mapping:** It maps each unique **TID (Thread ID)** to its specific **TCB address**.
+* **The Parent Link:** Notice the **PID** column in the table. This is how the Kernel knows that TID `1001` and `1002` both belong to the same parent, PID `100`.
+* **Quick Lookup:** When a CPU core becomes free, the scheduler looks at this table to find a TCB that is in a "Ready" state to start running.
+
+
+---
+
+## **2. The TCB (Thread Control Block) in Detail**
+In the image, you see two TCBs (`1001` and `1002`). This illustrates the "context" of each thread:
+* **TCB 1001:** Marked as **"Running."** Its Program Counter (**pc1**) points to the specific line of code the CPU is currently executing for this thread.
+* **TCB 1002:** Marked as **"Stopped"** (or Waiting). It’s not on the CPU right now, but its state is saved at memory address `0x9999999` so it can pick up exactly where it left off later.
+* **The Shared Anchor:** Notice both TCBs have arrows pointing to **PCB 100**. This confirms that while they have independent execution states, they share the process-level resources (like file descriptors and the Page Table).
+
+---
+
+## **3. The Memory Connection: One Address Space, Multiple Stacks**
+This is the most important visual for a C++ developer to internalize:
+* **The Shared Zone:** Both threads share the **Heap**, **Data**, and **Text (Code)** segments. If Thread 1 writes to a global variable in the Data section, Thread 2 sees that change instantly.
+* **The Private Zone:** Follow the blue arrows from the TCBs to the yellow boxes. Each TCB points to its **own dedicated Stack**. 
+    * **TCB 1001** $\rightarrow$ **Thread 1 Stack**
+    * **TCB 1002** $\rightarrow$ **Thread 2 Stack**
+* **Visualization Tip:** Imagine the Process as a shared playground. The playground is the memory. Each kid (Thread) is running around playing, but each kid has their own private backpack (Stack) to keep their personal stuff (local variables).
+
+
+---
+
+## **4. Interview "Golden Rules" to Remember**
+
+| Question | The High-Level Answer |
+| :--- | :--- |
+| **Why use a Thread Table?** | To allow the Kernel to schedule multiple threads from the same process onto different CPU cores simultaneously (True Parallelism). |
+| **What happens during a Thread Context Switch?** | The Kernel saves the current registers/PC into TCB A and loads them from TCB B. It **does not** change the Memory Map (Page Table), making it much faster than a Process switch. |
+| **What is the risk of sharing memory?** | Since they share the Heap and Data sections, you must use synchronization (Mutexes/Semaphores) to prevent **Race Conditions**. |
+
+---
+
+## **5. Final Summary for your Notes**
+> "The **Kernel Thread Table** tracks all active threads by mapping their **TID** to a **TCB**. In a multi-threaded environment, threads share the same **PCB** and **Virtual Memory (Heap/Data/Code)** but maintain independent **TCBs** and **Stacks**. This allows for 'lightweight' context switching because the OS only needs to swap thread-specific registers and stack pointers without remapping the entire address space."
+
+You've now covered the full journey from a single process to complex multi-threaded kernel management. These are exactly the fundamentals that distinguish a "senior" C++ dev from a "junior" one. 
+
+**Since you're a C++ dev, do you want to see a tiny code snippet that shows how a variable moves from the Data segment to the Stack to the Heap?** It might help lock in the visualization!

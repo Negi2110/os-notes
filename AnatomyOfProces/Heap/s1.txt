@@ -1,0 +1,60 @@
+This final piece of the memory map is the **Heap**. If the Stack is your "private notebook" and the Data Section is the "common blackboard," the Heap is the **"giant warehouse"** where you store the big, heavy objects.
+
+Here is the deep-dive summary for your notes, connecting the Heap to everything else you’ve learned.
+
+---
+
+## **1. The First Principle: Explicit Management**
+The biggest difference between the Stack and the Heap is **Control**.
+* **The Stack:** The compiler manages it. It's "Automatic." When the function returns, the memory is gone.
+* **The Heap:** **You** are the manager. In C++, you use `new` or `malloc` to grab a piece of the warehouse. It stays there until **you** explicitly call `delete` or `free`.
+* **The Risk:** If you forget to call `delete`, that "warehouse space" remains occupied even if no one is using it. This is a **Memory Leak**.
+
+
+---
+
+## **2. Why Use the Heap? (Size & Lifetime)**
+* **Size:** As you saw with the **Stack Overflow**, the stack is small (often 8MB). The Heap is massive—it is only limited by your physical RAM and the OS virtual memory.
+* **Lifetime:** Sometimes you need data to survive after a function ends. 
+    * If you create an object in a function on the **Stack**, it dies at the closing brace `}`.
+    * If you create it on the **Heap**, you can return a **Pointer** to it, and that data will still be there for the next function to use.
+
+---
+
+## **3. The "Shared" Nature (Like the Data Section)**
+Like the Data Section, the Heap is **Shared between all functions and all threads.**
+* Any function with a pointer to a specific heap address can read or write to it.
+* **Concurrency Warning:** Just like global variables, if two threads try to change the same Heap object at the same time, you get a **Race Condition**. You must use Mutexes here.
+
+---
+
+## **4. Anatomy of the Map: Growing Upward**
+Notice the arrows in your snapshot:
+* **Stack:** Grows **High to Low** (Downward).
+* **Heap:** Grows **Low to High** (Upward).
+* **The Design:** This "back-to-back" growth was designed so they have the maximum amount of empty space between them. They are moving toward each other in the middle of the virtual address space.
+
+
+---
+
+## **5. Summary for your Notes**
+
+| Feature | The Heap | The Stack |
+| :--- | :--- | :--- |
+| **Allocation** | Manual (`new` / `malloc`). | Automatic. |
+| **Deallocation** | Manual (`delete` / `free`). | Automatic (on function return). |
+| **Speed** | Slower (search for free space). | Instant (pointer math). |
+| **Persistence** | Long-term (controlled by you). | Short-term (tied to scope). |
+| **Access** | Via Pointers (indirection). | Direct or via Base Pointer. |
+
+---
+
+## **Final Interview "Master Answer"**
+When an interviewer asks you to compare these two, use this structured response:
+
+> "The **Stack** is used for static memory allocation and is managed automatically by the CPU via the Stack Pointer; it is fast but limited in size. The **Heap** is a large, dynamic pool of memory used for data whose size or lifetime cannot be determined at compile time. While the Heap offers flexibility and allows data to persist across function calls, it requires manual management and is prone to issues like fragmentation and memory leaks if not handled with RAII or smart pointers."
+
+### **One Last C++ Pro-Tip:**
+To avoid the dangers of the Heap, we use **Smart Pointers** (`std::unique_ptr`, `std::shared_ptr`). They live on the **Stack** (automatically managed) but they point to memory on the **Heap**. When the smart pointer dies on the stack, its "destructor" automatically deletes the memory on the heap for you. 
+
+**Does this complete your mental model of the memory map? You now know where the code, the globals, the local variables, and the dynamic objects all live!**

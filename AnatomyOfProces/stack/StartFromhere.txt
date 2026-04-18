@@ -1,0 +1,64 @@
+This new set of snapshots provides a fantastic end-to-end look at how high-level C code transforms into a running process. This "Life of a Program" perspective is exactly what senior engineers look for in interviews.
+
+Here is the structured summary for your notes, following the flow of your images.
+
+---
+
+## **1. The Program: "The Blueprint at Rest"**
+A **Program** is a passive entity. It is a file sitting on your disk waiting to be used.
+* **Compilation:** Your source code is translated into machine code specifically for a target **CPU Architecture** (e.g., x86 vs. ARM).
+* **Executable Format:** In Linux, this follows the **ELF (Executable and Linkable Format)**.
+    * **ELF Header:** The table of contents.
+    * **.text:** The actual machine instructions.
+    * **.data / .rodata:** Initialized global variables and constants.
+* **Key Concept:** A program is "at rest" and takes up zero CPU or RAM until you execute it.
+
+---
+
+## **2. From Code to Machine Instructions**
+Your images show the beautiful transformation from human-readable code to binary:
+* **C Code:** `int c = a + b;`
+* **Assembly:** `add r3, r0, r1` (Human-readable CPU instructions).
+* **Machine Code:** `0x11223345` (The actual hex/binary the CPU hardware understands).
+* **Memory Mapping:** Each instruction is assigned a specific virtual address (like `0xaabbcc00`) where it will live once loaded.
+
+
+---
+
+## **3. The Process: "The Blueprint in Motion"**
+When you run the program, the OS creates a **Process**.
+* **Loading:** The OS reads the ELF file from the disk and copies the `.text` and `.data` sections into RAM.
+* **The Private Sandbox:** The process gets its dedicated memory layout (Stack, Heap, Static, Text).
+* **The Execution Context:** * **Registers (r0, r1, r2...):** Hold the immediate values being calculated.
+    * **Program Counter (PC):** Points to the address of the *current* instruction in the Text section. In your demo image, the PC is at `0xaabbcc00`.
+
+---
+
+## **4. Program vs. Process: The "One-to-Many" Relationship**
+Your **Postgres** example is the perfect way to explain this in an interview:
+* **One Program File:** `postgres.exe` lives on the disk.
+* **Multiple Processes:** You can have `pid 1`, `pid 2`, and `pid 3` all running at once.
+* **Isolation:** Each PID has its own **Program Counter** and its own **Memory Space**, even though they are all running the exact same code from the same file.
+
+
+---
+
+## **5. Summary for your Notes**
+
+| Concept | Description |
+| :--- | :--- |
+| **Program** | A static file on disk (ELF format) containing machine code and data. |
+| **Process** | An active instance of a program in memory with its own resources. |
+| **Machine Code** | Hexadecimal representation of instructions at specific memory addresses. |
+| **Program Counter** | The CPU register that tracks "Where am I right now?" in the instructions. |
+| **PCB** | The data structure where the OS saves the process state (PC, registers) when paused. |
+
+---
+
+## **Interview "Power Answer":**
+> "A **Program** is an executable file on disk, like an ELF file, consisting of compiled machine code and data. A **Process** is that program in motion. When executed, the OS loads the program into memory and assigns it a **Process Control Block (PCB)**. The **Program Counter (PC)** then points to the first instruction in the Text segment, and the CPU begins the fetch-decode-execute cycle within that process's isolated sandbox."
+
+### **Quick Visualization for the Demo:**
+If you attach a debugger (like GDB) to a running process, you are essentially looking at the **Program Counter** as it hops from one memory address to the next in the **Text Section**.
+
+**Does this end-to-end flow from the C code on your screen to the Program Counter in the CPU help you visualize how the software finally meets the hardware?**

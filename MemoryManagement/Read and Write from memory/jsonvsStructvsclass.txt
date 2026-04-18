@@ -1,0 +1,170 @@
+## Struct vs Class vs JSON — When to Use What
+
+---
+
+### First Principles — what problem are we solving?
+
+```
+You have multiple related pieces of data.
+You need to group them together.
+Question: what's the best container?
+
+Answer depends on:
+  → Do you need behaviour (methods) or just data?
+  → Is this in-memory or going across a network/file?
+  → Do you know the shape at compile time or runtime?
+```
+
+---
+
+### Struct
+
+```
+Use when:
+  → Pure data, no complex behaviour
+  → Shape is KNOWN at compile time
+  → Performance matters (stack allocated, no overhead)
+  → Passing between functions in the same program
+
+Examples:
+  → A 3D point         { x: f32, y: f32, z: f32 }
+  → A DRAM timing spec { cl: u8, trcd: u8, trp: u8 }
+  → A pixel            { r: u8, g: u8, b: u8 }
+  → A CPU register     { value: u64, name: str }
+
+Properties:
+  → Fixed fields, fixed types
+  → Compiled to raw memory layout
+  → Zero overhead — accessing a field = one memory offset
+  → Type checked at compile time
+```
+
+---
+
+### Class
+
+```
+Use when:
+  → Data + behaviour belong together
+  → You need encapsulation (hide internals)
+  → You need inheritance or polymorphism
+  → Object has a lifecycle (init, mutate, destroy)
+
+Examples:
+  → A BankAccount  (balance + deposit() + withdraw())
+  → A Connection   (socket + connect() + send() + close())
+  → A Cache        (data + get() + set() + evict())
+
+Properties:
+  → Methods live alongside data
+  → Can enforce invariants (e.g. balance never goes negative)
+  → Heap allocated usually (pointer overhead)
+  → More expensive than struct but more powerful
+```
+
+---
+
+### JSON
+
+```
+Use when:
+  → Data is leaving your program (network, file, API)
+  → The receiver is a different language or system
+  → Shape may be unknown or dynamic at runtime
+  → Human readability matters
+
+Examples:
+  → API response from a server
+  → Config file
+  → Logging events
+  → Communication between microservices
+
+Properties:
+  → Text-based → slow to parse, large in size
+  → No types enforced (everything is stringly typed)
+  → Shape not checked until runtime
+  → Flexible but fragile
+```
+
+---
+
+### Why not JSON instead of Struct?
+
+```
+Struct                        JSON
+──────────────────────────    ──────────────────────────
+Compiled, type-safe           Text, no type safety
+Caught at compile time        Errors at runtime
+1 memory offset to access     Parse entire string first
+Lives on the stack            Heap allocated string
+~0 ns overhead                10–100× slower to access
+Only in your program          Works across languages/systems
+
+JSON is for TRANSPORT.
+Struct is for COMPUTATION.
+
+Using JSON in place of a struct is like
+shipping furniture in the box every time you want to sit on it.
+You unpack it once (deserialize) → use the struct → pack again to send.
+```
+
+---
+
+### Decision Tree
+
+```
+Do you need to send data over network or save to file?
+  YES → JSON (or protobuf/messagepack if performance matters)
+  NO  ↓
+
+Does the data have behaviour / invariants to enforce?
+  YES → Class
+  NO  ↓
+
+Is the shape fixed and known at compile time?
+  YES → Struct
+  NO  → Map / Dictionary / JSON
+```
+
+---
+
+### Typical real-world pattern
+
+```python
+# JSON comes in from API
+raw = '{"cl": 16, "trcd": 18, "trp": 18}'
+
+# Deserialize into a struct/class immediately
+@dataclass                       # Python struct equivalent
+class DramTiming:
+    cl:   int
+    trcd: int
+    trp:  int
+
+timing = DramTiming(**json.loads(raw))
+
+# Now work with the struct — fast, type-safe, clean
+total_latency = timing.cl + timing.trcd + timing.trp
+
+# Serialize back to JSON only when sending out
+response = json.dumps(asdict(timing))
+```
+
+---
+
+### One-line Interview Answers
+
+```
+Struct vs Class?
+  Struct = data only, stack, zero overhead.
+  Class  = data + behaviour + encapsulation + lifecycle.
+
+Struct vs JSON?
+  Struct is for in-memory computation — compiled, typed, fast.
+  JSON is for transport — text-based, language-agnostic, slow to parse.
+  You deserialize JSON into a struct the moment it enters your program.
+
+When would you use JSON internally?
+  Almost never. If you catch yourself using JSON inside a single program,
+  you probably want a struct or a map instead.
+```

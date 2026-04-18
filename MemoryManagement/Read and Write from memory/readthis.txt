@@ -1,0 +1,137 @@
+## Struct Memory Layout — Visual Explanation
+
+---
+
+### Wasteful Layout (24 bytes)
+
+```c
+struct Foo { char c; double d; short s; int i; };
+```
+
+```
+Byte: 00  01  02  03  04  05  06  07  08  09  10  11  12  13  14  15  16  17  18  19  20  21  22  23
+      ┌───┬───────────────────────────────┬───────────────────────────────────┬───────┬───┬───────────┐
+      │ c │  padding (7 bytes wasted)     │     double d (8 bytes)            │   s   │pad│   int i   │
+      └───┴───────────────────────────────┴───────────────────────────────────┴───────┴───┴───────────┘
+       ^c  ^─────────── gap ─────────────^ ^────────── d starts at 8 ────────^ ^s=16^     ^i at 20^
+
+Why padding exists:
+  c    = 1 byte  → placed at 0x00 ✓
+  d    = 8 bytes → MUST start at address divisible by 8 → next is 0x08
+                   gap from 0x01 to 0x07 = 7 bytes wasted
+  s    = 2 bytes → MUST start at address divisible by 2 → 0x10 ✓
+  pad  = 2 bytes → i needs address divisible by 4 → 0x10+2=0x12 not ok → pad to 0x14
+  i    = 4 bytes → starts at 0x14 ✓
+  
+Total = 1 + 7(pad) + 8 + 2 + 2(pad) + 4 = 24 bytes
+```
+
+---
+
+### Efficient Layout (16 bytes)
+
+```c
+struct Foo { double d; int i; short s; char c; };
+```
+
+```
+Byte: 00  01  02  03  04  05  06  07  08  09  10  11  12  13  14  15
+      ┌───────────────────────────────┬───────────────┬───────┬───┬───┐
+      │        double d (8 bytes)     │   int i       │   s   │ c │pad│
+      └───────────────────────────────┴───────────────┴───────┴───┴───┘
+       ^──────── d at 0x00 ──────────^ ^─ i at 0x08 ─^ ^s=12^ ^c ^
+       
+Why no wasted padding:
+  d = 8 bytes → starts at 0x00, needs ÷8 → 0x00 ✓
+  i = 4 bytes → starts at 0x08, needs ÷4 → 0x08 ✓
+  s = 2 bytes → starts at 0x0C, needs ÷2 → 0x0C ✓
+  c = 1 byte  → starts at 0x0E, needs ÷1 → 0x0E ✓
+  pad = 1 byte → struct total must be divisible by largest field (8)
+                 0x0F = 15 bytes → round up to 16 ✓
+
+Total = 8 + 4 + 2 + 1 + 1(pad) = 16 bytes
+```
+
+---
+
+### Why struct size must round up to largest field size
+
+```
+Rule: total struct size must be divisible by its largest field's alignment.
+      (so arrays of this struct stay aligned)
+
+struct Foo largest field = double = 8 bytes
+So total must be multiple of 8.
+
+Efficient layout raw = 15 bytes → round up to 16 ✓
+```
+
+---
+
+### The Golden Rule
+
+```
+Order fields like this to minimise padding:
+
+  LARGEST first   → smallest last
+
+  8-byte fields   (double, int64, pointers)
+  4-byte fields   (int, float)
+  2-byte fields   (short)
+  1-byte fields   (char, bool)
+
+Compiler cannot reorder fields for you.
+You must do it manually.
+```
+
+
+
+Stack and heap both live in **DRAM** (main RAM) — volatile memory.
+
+```
+Volatile (loses data on power off)
+│
+└── DRAM (main RAM) — your computer's RAM stick
+      │
+      ├── Stack   ← local variables, function calls, fixed size
+      │
+      ├── Heap    ← dynamic allocations (malloc/new), grows at runtime
+      │
+      ├── Code segment    ← your compiled program instructions
+      │
+      └── Data segment    ← global and static variables
+```
+
+---
+
+### Where each memory region sits in the hierarchy
+
+```
+Region          Lives in        Speed           Managed by
+─────────────────────────────────────────────────────────
+Registers       CPU itself      ~0.3 ns         CPU hardware
+L1/L2/L3 cache SRAM on chip    0.5–40 ns       CPU hardware (auto)
+Stack           DRAM            50–100 ns       CPU/compiler (auto)
+Heap            DRAM            50–100 ns       You (malloc/free)
+Code segment    DRAM → cache    50–100 ns       OS loader
+Data segment    DRAM            50–100 ns       OS/compiler
+SSD/HDD         Flash/Disk      µs–ms           OS (swap/virtual mem)
+```
+
+---
+
+### The key insight
+
+```
+Stack and heap are NOT different hardware.
+They are just different REGIONS of the same DRAM.
+
+The difference is purely organisational:
+  Stack → DRAM, managed automatically, grows downward
+  Heap  → DRAM, managed by you, grows upward
+
+When CPU accesses either:
+  Not in cache → goes to DRAM → 50–100 ns
+  In cache     → served from SRAM cache → ~1 ns
+  Same latency rules apply to both.
+```

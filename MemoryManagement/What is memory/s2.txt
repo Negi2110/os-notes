@@ -1,0 +1,229 @@
+# DRAM Deep Dive — Master Notes
+
+---
+
+## 0. The Root Cause of Everything
+
+```
+Capacitors leak charge.
+That one physical fact causes:
+  → the refresh cycle
+  → the destructive read
+  → the write-back step
+  → the row open/close latency
+  → why DRAM can't be used as CPU cache
+
+Understand this and everything else follows logically.
+```
+
+---
+
+## 1. DRAM Cell
+
+```
+1 bit = 1 transistor (access gate) + 1 capacitor (storage)
+
+Charged capacitor   = 1
+Discharged          = 0
+
+Why "Dynamic"?
+  State DECAYS over time (capacitor leaks)
+  Must be dynamically refreshed or data is lost
+  Compare SRAM ("Static") — transistors hold state forever while powered
+```
+
+---
+
+## 2. The Read Cycle (and why it's slow)
+
+```
+Step 1  Open access transistor    → select the row
+Step 2  Cap charge flows to bitline → tiny voltage on the wire
+Step 3  Sense amplifier detects it → THIS DRAINS THE CAPACITOR
+Step 4  Write data back            → mandatory restore step
+Step 5  Close transistor           → done
+
+Every read is a DESTRUCTIVE read.
+The write-back is not optional — skip it and the bit is gone.
+This write-back is a core source of DRAM latency.
+```
+
+---
+
+## 3. The Refresh Cycle
+
+```
+Capacitors lose charge in ~64ms (even without being read)
+Memory controller must read+rewrite EVERY row within that window
+
+During refresh → that row is UNAVAILABLE to the CPU
+
+This is why DRAM cannot be used as CPU cache:
+  Cache must respond in 1–4 cycles
+  DRAM is randomly going offline for refresh
+```
+
+---
+
+## 4. Asynchronous DRAM (pre-~1996)
+
+```
+Problem: RAM and CPU run on INDEPENDENT clocks
+
+CPU:  |____|‾‾‾‾|____|‾‾‾‾|____|‾‾‾‾|____|‾‾‾‾|
+       Read ↑        ↑         ↑
+            │ Delay  │ Delay   │ Delay
+RAM:        |‾‾‾‾‾‾‾‾|  |‾‾‾‾‾‾‾‾|  |‾‾‾‾‾‾‾‾|
+            Response     Response     Response
+            (misaligned) (misaligned) (misaligned)
+
+Problems:
+  → CPU stalls after every request, waiting for RAM
+  → RAM responds in its own time — CPU may miss the edge
+  → CPU waits another full cycle
+  → Refresh stalls are random and unpredictable
+
+Result: Wasted cycles everywhere, unpredictable latency
+```
+
+---
+
+## 5. Synchronous DRAM — SDRAM (~1996+)
+
+```
+Fix: RAM and CPU share the SAME clock
+
+CPU:  |____|‾‾‾‾|____|‾‾‾‾|____|‾‾‾‾|____|‾‾‾‾|
+       Read ↑        ↑         ↑
+            │        │         │
+RAM:        |‾‾‾‾‾‾‾‾|  |‾‾‾‾‾‾‾‾|  |‾‾‾‾‾‾‾‾|
+            Response     Response     Response
+            (aligned!)   (aligned!)   (aligned!)
+
+Benefits:
+  → CPU knows EXACTLY which cycle data arrives
+  → No stalling or polling
+  → Pipelining possible (send next request before first returns)
+  → Latency is now predictable and quoted in clock cycles (e.g. CL14)
+```
+
+---
+
+## 6. DDR Evolution
+
+```
+Generation  │ Change                          │ Voltage
+────────────┼─────────────────────────────────┼────────
+SDR SDRAM   │ 1 transfer per cycle (rise only)│ 3.3V
+DDR1        │ 2 transfers/cycle (rise + fall) │ 2.5V
+DDR2        │ Higher clock, internal 4× pump  │ 1.8V
+DDR3        │ Higher bandwidth                │ 1.5V
+DDR4        │ 2133–3200 MT/s, CL14–16        │ 1.2V
+DDR5        │ 4800–6400+ MT/s, on-die ECC    │ 1.1V
+            │ 2×32-bit channels per DIMM      │
+```
+
+**DDR key insight:**
+```
+Same clock frequency as SDR but transfers on BOTH edges
+→ 2× bandwidth with zero increase in clock speed
+→ DDR4-3200 = 1600 MHz clock × 2 = 3200 MT/s
+→ Always quote MT/s in interviews, not MHz
+```
+
+---
+
+## 7. Key Timing Parameters
+
+```
+CL   (CAS Latency)
+     Cycles from column request → data out
+     Lower = faster.  CL14 < CL18
+     Only meaningful relative to clock speed
+     (CL14 at 3200 MT/s ≈ CL18 at 4000 MT/s in real nanoseconds)
+
+tRCD (RAS to CAS Delay)
+     Cycles to open a row before you can read a column
+
+tRP  (Row Precharge)
+     Cycles to CLOSE a row before opening a new one
+
+tRAS (Active to Precharge)
+     Minimum time a row must stay open
+
+Quoted on RAM sticks as:  CL-tRCD-tRP-tRAS
+Example:                  16-18-18-38
+
+Full random access cost:  tRCD + CL + tRP
+Row hit cost:             CL only  (much faster)
+```
+
+---
+
+## 8. Bank, Row Buffer, Interleaving
+
+```
+Bank       Independent 2D cell array with its own sense amplifiers
+           Only 1 row open per bank at a time
+
+Row buffer The sense amplifiers holding the open row
+           Acts as a tiny cache inside DRAM
+           Row hit  → skip tRCD, pay CL only
+           Row miss → tRP + tRCD + CL
+
+Interleaving:
+           Bank 0 precharging (tRP)
+           Bank 1 serving a request simultaneously
+           → Latency hidden behind other work
+           → Why more banks = better throughput
+```
+
+---
+
+## 9. Burst Mode
+
+```
+After the first CAS, subsequent columns in the same open row
+come out one per cycle with NO extra latency.
+
+This is how one "read" delivers 64 bytes (one cache line):
+  64 pins × 8 prefetch bits = 512 bits = 64 bytes
+  delivered as a burst across multiple cycles
+  but pipelined so throughput stays high
+```
+
+---
+
+## 10. Dual Channel
+
+```
+Single channel:  64-bit bus between CPU and RAM  → 1× bandwidth
+Dual channel:    2 × 64-bit buses (two sticks)   → 2× bandwidth
+                 CPU interleaves requests across both channels
+
+DDR5 goes further:
+  2 × 32-bit sub-channels ON THE SAME STICK
+  Two independent requests served simultaneously per DIMM
+```
+
+---
+
+## 11. One-Line Interview Answers
+
+**"Why is DRAM slower than SRAM?"**
+Every DRAM read is destructive — it drains the capacitor — requiring a mandatory write-back, and capacitor charge/discharge is inherently slower than transistor state-holding in SRAM.
+
+**"What is the refresh cycle?"**
+Capacitors leak within ~64ms, so the memory controller periodically reads and rewrites every row to prevent data loss — during which those rows are inaccessible.
+
+**"What did SDRAM fix over async DRAM?"**
+Async DRAM had no timing relationship with the CPU, causing unpredictable stalls. SDRAM locks RAM to the CPU clock so data arrives on a known cycle, enabling pipelining.
+
+**"What is CAS latency?"**
+The number of clock cycles between a column address being sent and data appearing on the bus. Lower is faster, but only meaningful relative to the clock frequency.
+
+**"Why can't DRAM be used as CPU cache?"**
+Cache must respond in 1–4 cycles. DRAM has ~14+ cycle latency, requires destructive reads with write-back, and periodically goes offline for refresh — all incompatible with cache speed requirements.
+
+**"What is burst mode?"**
+After paying the initial CAS latency to open a column, subsequent columns in the same row are delivered one per cycle for free — enabling the full 64-byte cache line to be transferred efficiently.

@@ -1,0 +1,209 @@
+# DDR / DDR4 / DDR5 — Master Notes
+
+---
+
+## 0. The Core Idea
+
+```
+SDR SDRAM transfers on the RISING clock edge only.
+DDR transfers on BOTH edges — rising AND falling.
+Same clock. Double the data. That's it.
+
+Clock:  ___/‾‾‾\___/‾‾‾\___/‾‾‾\___
+             ↑   ↑   ↑   ↑   ↑   ↑
+             T1  T2  T3  T4  T5  T6  ← DDR: 6 transfers
+                                      ← SDR: 3 transfers (rise only)
+```
+
+---
+
+## 1. Why MT/s, Not MHz
+
+```
+DDR4-3200:
+  Actual clock frequency  = 1600 MHz
+  Transfers per second    = 1600 × 2 = 3200 MT/s
+
+MT/s = Megatransfers per second
+MHz  = clock frequency (half the transfer rate for DDR)
+
+Rule: Always quote MT/s in interviews, never MHz.
+      MHz understates the real transfer rate by 2×.
+```
+
+---
+
+## 2. DDR4 — Architecture
+
+```
+Bus width:        64 pins (data lines) per channel
+Prefetch buffer:  8 bits per IO pin
+
+Math:
+  64 pins × 8 bits = 512 bits = 64 bytes per burst
+
+Why 64 bytes?
+  CPU cache line = 64 bytes
+  RAM burst size = 64 bytes
+  Not a coincidence — designed together
+  A cache miss always fetches exactly 1 cache line = 1 burst
+
+Burst mechanics:
+  1 read command → 8 consecutive transfers × 64 pins
+  Each transfer  = 64 bits (1 bit per pin)
+  8 × 64 bits    = 512 bits = 64 bytes delivered
+
+Specs:
+  Speed    │ 2133–3200 MT/s
+  Voltage  │ 1.2V
+  Pins     │ 288 (DIMM)
+  Channels │ 1 × 64-bit per stick
+```
+
+```
+DDR4 layout:
+
+  ┌─────────────────────────┐
+  │       DDR4 SDRAM        │
+  │     (64-pin IO bus)     │
+  └────────────┬────────────┘
+               │ 64 bytes per burst
+               ▼
+  Read addr X → CPU receives 64 bytes
+```
+
+---
+
+## 3. DDR5 — What Changed
+
+```
+Biggest architectural shift since DDR1:
+DDR5 splits the single 64-bit bus into TWO independent 32-bit channels
+on the same physical DIMM.
+
+DDR4:  1 channel × 64 pins → 1 request at a time → 64 bytes
+DDR5:  2 channels × 32 pins → 2 requests at a time → 64 bytes each
+
+Prefetch buffer: 16 bits per pin (vs 8 in DDR4)
+
+Per channel math:
+  32 pins × 16 bits = 512 bits = 64 bytes per channel
+
+Both channels together:
+  64 bytes × 2 = 128 bytes total per memory cycle
+```
+
+```
+DDR5 layout:
+
+  ┌─────────────────────────────────────────┐
+  │              DDR5 SDRAM                 │
+  ├──────────────────┬──────────────────────┤
+  │    Channel A     │     Channel B        │
+  │   (32-pin bus)   │   (32-pin bus)       │
+  └────────┬─────────┴──────────┬───────────┘
+           │ 64 bytes           │ 64 bytes
+           └─────────┬──────────┘
+                     ▼
+                    CPU
+             128 bytes total
+```
+
+---
+
+## 4. DDR4 vs DDR5 — Side by Side
+
+```
+Property           │ DDR4              │ DDR5
+───────────────────┼───────────────────┼──────────────────────
+Channels per DIMM  │ 1 × 64-bit        │ 2 × 32-bit
+Prefetch/pin       │ 8 bits            │ 16 bits
+Bytes per burst    │ 64 bytes          │ 128 bytes (2 channels)
+Speed              │ 2133–3200 MT/s    │ 4800–6400+ MT/s
+Voltage            │ 1.2V              │ 1.1V
+On-die ECC         │ No                │ Yes (per channel)
+Power management   │ On motherboard    │ On DIMM (PMIC chip)
+Pins               │ 288               │ 288 (NOT compatible)
+```
+
+---
+
+## 5. DDR Generation Timeline
+
+```
+Generation  │ Prefetch │ Voltage │ Speed (MT/s)   │ Key change
+────────────┼──────────┼─────────┼────────────────┼──────────────────────
+SDR SDRAM   │ 1 bit    │ 3.3V    │ 100–133        │ Synced to CPU clock
+DDR1        │ 2 bits   │ 2.5V    │ 200–400        │ Both clock edges
+DDR2        │ 4 bits   │ 1.8V    │ 533–1066       │ Higher clock
+DDR3        │ 8 bits   │ 1.5V    │ 800–2133       │ Lower voltage
+DDR4        │ 8 bits   │ 1.2V    │ 2133–3200      │ Higher density
+DDR5        │ 16 bits  │ 1.1V    │ 4800–6400+     │ Dual sub-channel
+```
+
+---
+
+## 6. The Prefetch Buffer Explained
+
+```
+Prefetch buffer = bits fetched from cell array per IO pin per access
+
+It pre-loads data from slow cell array into fast IO buffer
+so the IO bus can clock it out at full speed.
+
+DDR4:
+  8 bits/pin × 64 pins = 512 bits = 64 bytes loaded per command
+  Sent out as 8 consecutive transfers (burst of 8)
+
+DDR5 per channel:
+  16 bits/pin × 32 pins = 512 bits = 64 bytes per channel
+  Two channels → 128 bytes total
+
+Bigger prefetch = more data ready at the IO buffer
+               = higher burst bandwidth
+               = but also means minimum transfer size is larger
+                 (can't fetch less than a full prefetch worth)
+```
+
+---
+
+## 7. Why DDR5 Uses Two 32-bit Channels
+
+```
+Problem with one wide channel:
+  All requests compete for the same 64-bit bus
+  One request blocks the next
+
+Two narrow channels fix this:
+  Channel A and B are INDEPENDENT
+  Two different requests served simultaneously
+  Lower per-channel capacitance → higher frequency possible
+  Each channel has its own ECC → better reliability
+
+Analogy:
+  DDR4 = one 4-lane highway
+  DDR5 = two 2-lane highways running in parallel
+         (less congestion, same total width, higher throughput)
+```
+
+---
+
+## 8. One-Line Interview Answers
+
+**"What is DDR?"**
+Transfers data on both rising and falling clock edges, doubling bandwidth vs SDR without changing clock frequency.
+
+**"What is MT/s vs MHz?"**
+MT/s is megatransfers per second — the actual data rate. For DDR, it's always 2× the clock MHz. DDR4-3200 = 1600 MHz clock. Always quote MT/s.
+
+**"What is the prefetch buffer?"**
+Bits fetched from the cell array per IO pin per access. DDR4 = 8 bits/pin × 64 pins = 64 bytes per burst — exactly one CPU cache line.
+
+**"Why is 64 bytes the magic number?"**
+CPU cache lines are 64 bytes. The entire memory subsystem — bus width, prefetch size, burst length — is co-designed to deliver exactly one cache line per burst.
+
+**"What is the biggest change in DDR5?"**
+DDR5 splits the single 64-bit channel into two independent 32-bit sub-channels on the same DIMM, doubling parallelism and total burst bandwidth from 64 to 128 bytes.
+
+**"Are DDR4 and DDR5 physically compatible?"**
+No. Both have 288 pins but the notch position differs — DDR5 cannot seat in a DDR4 slot.

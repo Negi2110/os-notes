@@ -1,0 +1,221 @@
+# DRAM Internals — Master Notes
+
+---
+
+## 0. The Mental Model
+
+```
+DRAM is a 2D grid of capacitors.
+To read any cell, you must first load its entire row into a buffer.
+Then pick the column you want from that buffer.
+
+Everything in this topic is a consequence of that two-step process.
+```
+
+---
+
+## 1. Physical Hierarchy
+
+```
+DIMM        The stick you plug into the motherboard
+  └── Chip      Multiple chips per DIMM (usually 8)
+        └── Bank    Independent 2D cell array (8–16 banks per chip)
+              └── Row     Horizontal slice (~32,768 rows per bank)
+                    └── Column  Bit position within a row (~1,024 per row)
+                          └── Cell    1 transistor + 1 capacitor = 1 bit
+
+Scale example (one bank):
+  32,768 rows × 1,024 columns = ~33 million bits per bank
+  8 banks/chip × 8 chips/DIMM = 64 banks per stick
+```
+
+**How the CPU address maps to DRAM:**
+```
+CPU sends 64-bit physical address
+Memory controller decodes it into:
+  → Which DIMM
+  → Which bank
+  → Which row
+  → Which column
+
+This decoded form = the DRAM address
+```
+
+---
+
+## 2. Bank Layout (Text Diagram)
+
+```
+BANK — one independent 2D array
+┌──────────────────────────────────────────────────────┐
+│  ROW 0:   [ ][ ][ ][ ][ ][ ] ... × 1024  ← inactive │
+│  ROW 1:   [ ][ ][ ][ ][ ][ ] ... × 1024  ← inactive │
+│  ROW 2:   [█][█][█][█][█][█] ... × 1024  ← OPEN ROW │
+│  ROW 3:   [ ][ ][ ][ ][ ][ ] ... × 1024  ← inactive │
+│  ...                                                  │
+│  ROW 32K: [ ][ ][ ][ ][ ][ ] ... × 1024             │
+└──────────────────────────────────────────────────────┘
+               ↓ sense amplifiers latch entire row
+┌──────────────────────────────────────────────────────┐
+│  ROW BUFFER:  [b0][b1][b2][b3][b4] ... [b1023]       │
+└───────────────────────┬──────────────────────────────┘
+                        │ CAS selects column N
+                        ▼
+                   DATA OUT → CPU
+```
+
+---
+
+## 3. Opening a Row — Step by Step
+
+```
+Step 1 — RAS (Row Address Strobe)
+  Send row address to the bank
+  Sense amplifiers latch the ENTIRE row into the row buffer
+  Slow — tRCD delay (~14–18 ns on DDR4)
+  Row is now "open" / "active"
+
+Step 2 — CAS (Column Address Strobe)
+  Send column address
+  Read specific column(s) out of the row buffer
+  Fast — CL delay (same ~14 cycles but already in buffer)
+
+Step 3 — Precharge
+  Close the row — restore bitlines to idle voltage
+  Flush row buffer back to cells
+  Required before a DIFFERENT row in same bank can open
+  tRP delay
+```
+
+---
+
+## 4. Access Latency — Row Hit vs Row Miss
+
+```
+ROW MISS (worst case — random access):
+  ──[RAS]──[tRCD]──[CAS]──[CL]──[Data]──[Precharge tRP]──
+  Total = tRCD + CL + tRP
+
+  e.g. DDR4-3200 CL16: 16+16+16 = 48 cycles ≈ 30 ns
+
+ROW HIT (best case — same row already open):
+  ──[CAS]──[CL]──[Data]──
+  Total = CL only
+
+  Same example: 16 cycles ≈ 10 ns
+
+Row hit is 3–4× faster than row miss.
+This is why spatial/temporal locality matters so much.
+Sequential access patterns are dramatically faster than random.
+```
+
+---
+
+## 5. Sense Amplifiers
+
+```
+Location:  End of each column bitline within a bank
+Function:  Detect tiny voltage difference when a row is opened
+           (cap charged vs discharged = tiny ΔV, ~100–200mV)
+           Amplify to full logic levels (0V or VDD)
+
+The row buffer IS the sense amplifiers.
+Once a row is open, it lives in the sense amps — fast to re-read.
+
+Write path:
+  Writes go to sense amplifiers first (not directly to cells)
+  Committed back to cells only during precharge
+  Power loss mid-write = data corruption risk
+  This is why write-back happens at precharge, not immediately
+```
+
+---
+
+## 6. The One-Open-Row Constraint & Why Banks Help
+
+```
+Constraint:
+  Each bank has ONE set of sense amplifiers
+  → Only ONE row open per bank at a time
+  → Opening a new row requires closing (precharging) the current one first
+
+Problem this creates:
+  precharge takes tRP cycles — bank is unavailable during this time
+
+Solution — multiple banks:
+  Banks are INDEPENDENT — each has its own sense amplifiers
+  While bank 0 is precharging (unavailable)
+  bank 1 is already serving the next request
+
+  This is called BANK INTERLEAVING
+  Latency of one bank is hidden behind work in another
+
+Typical scale:
+  8 banks/chip × 8 chips/DIMM = 64 independent banks per stick
+  Memory controller pipelines requests across all 64
+```
+
+---
+
+## 7. Timing Parameters Cheat Sheet
+
+```
+Parameter  │ Full name              │ What it measures
+───────────┼────────────────────────┼──────────────────────────────
+CL         │ CAS Latency            │ Cycles: column request → data out
+tRCD       │ RAS to CAS Delay       │ Cycles: row open → column readable
+tRP        │ Row Precharge          │ Cycles: row close → next row openable
+tRAS       │ Active to Precharge    │ Cycles: min time row must stay open
+tRC        │ Row Cycle Time         │ tRAS + tRP (full open+close cycle)
+
+Quoted on RAM sticks as:  CL-tRCD-tRP-tRAS
+Example:                  16-18-18-36
+
+Random access total:      tRCD + CL + tRP
+Row hit total:            CL only
+```
+
+---
+
+## 8. Full Glossary
+
+```
+Term            │ What it is
+────────────────┼────────────────────────────────────────────────────
+DIMM            │ Physical RAM stick; contains multiple chips
+Bank            │ Independent 2D cell array; own sense amps; parallel
+Row             │ Full horizontal slice of a bank; loaded all at once
+Column          │ Single bit position within an open row
+Cell            │ 1T + 1C = 1 bit; capacitor holds charge
+Row buffer      │ Sense amplifiers caching the currently open row
+Sense amplifier │ Detects tiny cap voltage, amplifies to logic level
+RAS             │ Row Address Strobe — command to open a row
+CAS             │ Column Address Strobe — command to read a column
+Precharge       │ Closing a row; restores bitlines; required before new row
+Row hit         │ Requested row already open → pay CL only
+Row miss        │ Different row needed → pay tRCD + CL + tRP
+Bank interleave │ Pipelining requests across multiple banks to hide latency
+DRAM address    │ CPU physical address decoded into DIMM/bank/row/col
+```
+
+---
+
+## 9. One-Line Interview Answers
+
+**"What is a DRAM bank?"**
+An independent 2D cell array with its own sense amplifiers, so it can serve requests in parallel with other banks.
+
+**"Why only one open row per bank?"**
+Each bank has one set of sense amplifiers. Opening a new row requires precharging — resetting those amps — which closes the current row first.
+
+**"What is the row buffer?"**
+The sense amplifiers holding the currently open row. Acts as a tiny cache inside DRAM — a row hit reads from it with no extra latency.
+
+**"Why does locality of reference matter for DRAM?"**
+Consecutive accesses to the same open row skip tRCD entirely and pay only CAS latency — 3–4× faster than a row miss needing a full close-open cycle.
+
+**"What happens during precharge?"**
+Bitlines are restored to idle voltage, the row buffer is flushed back to cells, and the bank becomes ready to open a new row.
+
+**"Why do writes risk corruption on power loss?"**
+Writes land in the sense amplifiers first and are only committed to cells during precharge. If power is lost before that happens, the write is lost.

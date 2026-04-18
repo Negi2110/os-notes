@@ -1,0 +1,270 @@
+# Instruction Life Cycle — Master Notes
+
+---
+
+## 0. The Five Stages
+
+```
+Every instruction your program runs goes through these stages:
+
+  FETCH  →  DECODE  →  EXECUTE  →  READ  →  WRITE
+
+Each stage has a dedicated CPU component.
+Stages can OVERLAP across multiple instructions (pipelining).
+```
+
+---
+
+## 1. The Example — What We're Executing
+
+```
+PC = 640 (program counter points here)
+Instruction at address 640:
+  sub sp, sp, #12
+  → subtract 12 from stack pointer
+  → allocating 12 bytes on the stack
+
+RAM layout around address 640:
+  900  _malloc
+  800  _free
+  704  ret
+  700  add sp, sp, #12
+  696  ldp bp, lr, [sp, #12]
+  692  bl _free
+  ...
+  640  sub sp, sp, #12   ← PC is HERE
+```
+
+---
+
+## 2. FETCH — Get the Instruction
+
+```
+Component: CU + MMU
+
+PC = 640.
+CU tells MMU: "fetch instruction at virtual address 640."
+
+MMU:
+  1. Checks TLB for virtual address 640 → physical address.
+  2. Checks L1i cache → NOT there (cache miss on first run).
+  3. Goes to RAM.
+  4. Fetches NOT just 1 instruction but 64 BYTES (one cache line).
+     Starting at address 640.
+     Gets instructions at 640, 644, 648, 652... all at once.
+  5. Takes 50–100ns (RAM access).
+
+Cache update:
+  64 bytes loaded into L1i (instruction cache).
+  64 bytes also stored in L2.
+  Next instructions (644, 648...) are now in L1i → future fetches free.
+
+Result: instruction "sub sp, sp, #12" is now in the CPU.
+```
+
+---
+
+## 3. DECODE — What Does It Mean?
+
+```
+Component: CU
+
+CU reads the raw binary instruction.
+Figures out:
+  What operation?  → SUB (subtract)
+  What operands?   → sp (stack pointer register), sp, immediate #12
+  What form?       → register - immediate value
+
+CU also:
+  Fetches the current value of sp from the Registers.
+  Prepares the operands for the ALU.
+  Converts the instruction into control signals the ALU understands.
+
+Note on CISC (x86):
+  Decode is complex — instructions are variable length.
+  x86 decoder converts CISC instruction → RISC micro-ops.
+  This is why x86 decode units are large and power-hungry.
+
+Note on RISC (ARM — this example):
+  Fixed size instructions (32-bit always).
+  Decode is fast and simple.
+  One reason ARM is efficient.
+```
+
+---
+
+## 4. EXECUTE — Do the Work
+
+```
+Component: ALU
+
+ALU receives from CU:
+  Operation: SUB
+  Operand 1: current value of sp (e.g. 100)
+  Operand 2: immediate value 12
+
+ALU computes:
+  sp = 100 - 12 = 88
+
+Result sits in ALU output register.
+No memory touched in this stage for this instruction.
+Pure computation. Fastest stage.
+```
+
+---
+
+## 5. READ — Optional Memory Read
+
+```
+Component: MMU + Caches
+
+Only needed for LOAD instructions.
+  e.g. LDR r0, [sp, #4]  → read value from memory address (sp+4)
+
+For our SUB instruction: NO memory read needed.
+Result came purely from register + immediate value.
+
+When memory read IS needed:
+  MMU translates virtual address → physical.
+  Check L1d (data cache) → hit? done in ~1ns.
+  Miss → check L2 → miss → check L3 → miss → go to RAM (50–100ns).
+```
+
+---
+
+## 6. WRITE — Store the Result
+
+```
+Component: Registers or MMU
+
+Write result back to its destination.
+
+For SUB sp, sp, #12:
+  Result (88) written back to sp register.
+  sp is now 88 instead of 100.
+  Stack has grown by 12 bytes.
+
+For STORE instructions:
+  Result written to memory address via MMU.
+  Goes through cache hierarchy.
+  Written to L1d first (write-back cache).
+  Eventually flushed to RAM.
+
+PC incremented:
+  PC = 640 + 4 = 644 (ARM instructions are 4 bytes each).
+  Next fetch starts at 644.
+  644 is ALREADY in L1i (was fetched with the 64-byte burst).
+  Next instruction fetch: cache hit → ~1ns → fast!
+```
+
+---
+
+## 7. Full Cycle — One Instruction Complete
+
+```
+Stage     Component   What Happened                    Cost
+──────────────────────────────────────────────────────────────
+FETCH     CU + MMU    Read 64 bytes from RAM at 640    50–100ns
+                      Store in L1i and L2
+DECODE    CU          Parse "sub sp, sp, #12"          ~1 cycle
+                      Get sp value from registers
+                      Convert to ALU control signals
+EXECUTE   ALU         sp = sp - 12 = 88                ~1 cycle
+READ      MMU         (not needed for SUB)             skipped
+WRITE     Registers   sp ← 88                          ~1 cycle
+                      PC ← 644
+
+Next fetch: address 644 already in L1i → cache hit → ~1ns
+```
+
+---
+
+## 8. Pipelining — All Stages Overlap
+
+```
+Without pipelining (sequential):
+  Instr 1: F D E R W
+  Instr 2:           F D E R W
+  Instr 3:                     F D E R W
+
+With pipelining (assembly line):
+  Instr 1: F D E R W
+  Instr 2:   F D E R W
+  Instr 3:     F D E R W
+  Instr 4:       F D E R W
+
+  While instr 1 is in EXECUTE,
+  instr 2 is being DECODED,
+  instr 3 is being FETCHED.
+  All happening simultaneously.
+
+Throughput: one instruction completes per cycle (at steady state).
+This is why RISC (fixed instruction size) pipelines better than CISC.
+```
+
+---
+
+## 9. The Teaser — Function Call Cache Miss
+
+```
+You're executing code at address 640.
+64 bytes cached in L1i: addresses 640–703.
+
+Your code calls a function at address 5000.
+  bl _malloc   (branch + link to malloc)
+
+PC jumps to 5000.
+L1i has addresses 640–703. Address 5000 is NOT there.
+Cache miss. Must go to RAM. 50–100ns penalty.
+
+This is called an INSTRUCTION CACHE MISS on a branch.
+
+Fix — INLINING:
+  Compiler copies the function body directly into the call site.
+  No branch. No jump to a new address.
+  Instructions stay in the same 64-byte cache line region.
+  No cache miss.
+
+  This is why compilers inline small functions automatically.
+  This is why MySQL 8.x had performance regressions —
+  code refactoring broke inlining → more cache misses
+  → slower despite "cleaner" code.
+```
+
+---
+
+## 10. Summary Table
+
+```
+Stage    Component   Input              Output
+─────────────────────────────────────────────────────────
+Fetch    CU + MMU    PC address         64-byte cache line
+                                        in L1i
+Decode   CU          Raw instruction    Control signals
+                     bytes              + operand values
+Execute  ALU         Operands +         Computed result
+                     operation
+Read     MMU + Cache Memory address     Value from memory
+                     (if needed)        (optional stage)
+Write    Registers   Computed result    Updated register
+         or MMU      or memory addr     or memory location
+```
+
+---
+
+## 11. One-Line Interview Answers
+
+**"What are the stages of the instruction lifecycle?"**
+Fetch (get instruction from memory/cache), Decode (CU parses what to do), Execute (ALU computes), Read (optional memory read), Write (result stored to register or memory).
+
+**"Why does CPU fetch 64 bytes when it only needs 4?"**
+Spatial locality — the next instructions are almost certainly at the following addresses. Fetching a full cache line (64 bytes) fills L1i with ~16 instructions, making subsequent fetches near-free cache hits.
+
+**"What happens when a function is called?"**
+PC jumps to the function's address. If that address is not in L1i, it causes an instruction cache miss, requiring a 50–100ns RAM fetch — this is why inlining small functions improves performance.
+
+**"What is instruction cache miss?"**
+When the CPU branches to an address not currently in L1i, it must fetch from RAM (50–100ns) instead of cache (~1ns) — a 50–100× penalty for that fetch.
+
+**"What is pipelining?"**
+Overlapping the fetch-decode-execute stages of consecutive instructions — while instruction N is executing, instruction N+1 is decoding and N+2 is being fetched, achieving one instruction completion per cycle at steady state.

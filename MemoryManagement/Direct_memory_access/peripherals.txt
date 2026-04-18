@@ -1,0 +1,61 @@
+## Peripheral — Simple Explanation
+
+---
+
+### What It Means
+
+```
+Peripheral = anything connected to the CPU that is NOT the CPU or RAM.
+
+It is every device that sends data TO or receives data FROM your computer.
+```
+
+---
+
+### Examples
+
+```
+INPUT peripherals (send data to computer):
+  Keyboard        → sends keystrokes
+  Mouse           → sends position/clicks
+  Network card    → sends incoming packets
+  Disk/SSD        → sends file data
+  Microphone      → sends audio
+  Webcam          → sends video frames
+  USB drive       → sends file data
+
+OUTPUT peripherals (receive data from computer):
+  Monitor         → receives pixels
+  Speaker         → receives audio
+  Printer         → receives documents
+  Network card    → sends outgoing packets (both directions)
+```
+
+---
+
+### Why They Are Slow Compared to CPU
+
+```
+CPU speed:        ~3GHz, nanoseconds per operation
+RAM speed:        50–100 nanoseconds
+SSD speed:        50–100 microseconds  (1000× slower than RAM)
+Network card:     depends on network
+HDD:              milliseconds         (1,000,000× slower than CPU)
+
+Peripherals live in a completely different speed world.
+CPU is always waiting on them.
+This speed gap is exactly why DMA matters.
+```
+
+---
+
+### The Simple Mental Model
+
+```
+CPU + RAM = the brain (fast, expensive, inside)
+Peripherals = the outside world (slow, cheap, external)
+
+DMA = the bridge that moves data from
+      the outside world INTO the brain
+      without disturbing the brain while it thinks.
+```

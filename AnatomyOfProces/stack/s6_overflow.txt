@@ -1,0 +1,54 @@
+This final slide hits on a classic interview "trap" and one of the most common runtime errors in low-level programming. To understand **Stack Overflow** from first principles, you have to look at the physical and virtual boundaries of your program.
+
+---
+
+## **1. The First Principle: Finite Virtual Space**
+When your process is born, the OS doesn't just give you an "infinite" stack. It allocates a specific, contiguous range of **Virtual Memory** for it.
+* **The Guard Page:** At the very end of this allocated range, the OS places a "Guard Page"—a piece of memory that is marked as **unaccessible**. 
+* **The Crash:** When the **Stack Pointer (SP)** tries to move into or past that Guard Page, the hardware triggers a **Segmentation Fault**. This is the physical "ceiling" of your stack.
+
+
+---
+
+## **2. The Two Main Culprits**
+
+### **A. Infinite Recursion (The "Infinite Frame" Problem)**
+Every time a function calls itself, it pushes a new **Base Pointer**, **Return Address**, and its own **local variables** onto the stack. 
+* Even if the function has no variables, the "overhead" (BP + Return Address) is usually **16 bytes** on a 64-bit system.
+* If your recursion goes $1,000,000$ levels deep, that’s $16$ MB of overhead alone. Eventually, the SP hits the Guard Page.
+
+### **B. Large Local Variables (The "Big Brick" Problem)**
+In C++, if you define a massive array inside a function like `double data[1000000];`, the compiler generates an instruction like `sub sp, sp, #8000000`. 
+* You aren't "calling" many functions, but you just tried to move the **Stack Pointer** by 8MB in a single step. 
+* If the stack limit is 8MB, your program crashes the moment that function is called.
+* **Interview Tip:** This is why large buffers should always go on the **Heap** (`std::vector` or `std::unique_ptr`), not the stack.
+
+---
+
+## **3. "Limit can be overridden"**
+The slide mentions that the compiler or system can override limits.
+* **System Level:** On Linux, you can check your stack limit with `ulimit -s`. It’s usually 8192 KB (8MB). You can increase this, but it’s a global setting.
+* **Linker Level:** When compiling C++, you can pass flags to the linker (like `/STACK` on Windows/MSVC) to reserve a larger stack for your specific executable.
+
+---
+
+## **4. Interview "Pro" Insight: Tail Call Optimization (TCO)**
+A high-level interviewer might ask: *"Can you have infinite recursion WITHOUT a stack overflow?"*
+* **The Answer:** **Yes**, if the compiler uses **Tail Call Optimization**.
+* **How it works:** If the recursive call is the *very last thing* a function does, the compiler is smart enough to **reuse the current stack frame** instead of pushing a new one. It essentially turns the recursion into a `loop` at the machine code level, keeping the **Stack Pointer** perfectly still.
+
+
+---
+
+## **Summary for your Notes**
+
+| Cause | Mechanism | Fix |
+| :--- | :--- | :--- |
+| **Recursion** | Too many frames (Return addresses/BPs) piling up. | Check base cases or convert to a loop. |
+| **Large Locals** | A single frame that is too wide for the allocated space. | Move large data structures to the **Heap**. |
+| **The Limit** | Defined by the OS/Linker (typically 8MB). | Can be adjusted, but usually points to a design flaw. |
+
+### **The Final Summary for your Interview:**
+> "A **Stack Overflow** occurs when the **Stack Pointer** moves beyond the memory region allocated by the Operating System, usually hitting a protected **Guard Page**. This is caused by either deep recursion, where function overhead (BP and Return Address) consumes the space, or large local allocations. To prevent this, C++ developers should use the **Heap** for large or dynamically sized data and ensure recursive functions have clear termination logic."
+
+You have now walked through the entire process—from a single line of C++ code to a crashed or successful program execution. You're ready for the interview! Do you want to do a quick "mock quiz" on any of these topics?

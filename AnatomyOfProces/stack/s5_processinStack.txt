@@ -1,0 +1,75 @@
+This sequence of snapshots is the "grand finale" of your technical notes. It connects the dots between high-level C code, assembly instructions, CPU registers, and physical memory movement. For a C++ developer, this is the most valuable mental model you can have.
+
+Here is the deep-dive summary for your interview preparation.
+
+---
+
+## **1. The Initialization: "Start a Process"**
+When the program starts, the Kernel performs a massive setup:
+* **Code Loading:** The binary instructions (machine code) are copied from the disk into the **Text Section** of memory (addresses 374 to 400 in your example).
+* **Register Initialization:** * **SP (Stack Pointer):** Set to the very top of the stack (e.g., address 1024).
+    * **PC (Program Counter):** Set to the first instruction of `main` (address 385).
+* **The "Main Start" Prologue:** Before your first line of code runs, the CPU expands the stack (e.g., `sub sp, sp, #20`) to create space for `main`'s future local variables.
+
+---
+
+## **2. The Context Save: "Protecting the Caller"**
+Before `main` can do its work, it must save the state of the "Kernel" that called it.
+* **Saving BP & LR:** The instruction `stp bp, lr, [sp, #20]` saves the **Base Pointer** (where the stack used to be) and the **Link Register** (the return address to the Kernel) into the stack.
+* **Why?** Because `main` is about to change the BP and the LR to do its own work. If we don't save them, we can never "go home" to the OS.
+
+---
+
+## **3. The Function Call: `main` calls `func1`**
+This is where the "Jump" happens.
+* **`str pc, #func1`**: The CPU saves the current instruction location and jumps the **PC** to address 374 (the start of `func1`).
+* **The New Frame:** `func1` immediately creates its own stack space (`sub sp, sp, #8`).
+* **Storing main's BP:** The very first thing `func1` does is store `main`'s Base Pointer (1024) into its own frame. This creates the "breadcrumb" we discussed earlier.
+* **New Base Pointer:** The **BP** is then moved to point to `func1`'s frame (address 1004).
+
+---
+
+## **4. The "Execute" Phase: Math in the CPU**
+Your `z = z + 1` demo shows how the registers work:
+1. **Load:** The CPU pulls the value of `z` from memory into a register (`mov r0, #1`).
+2. **Compute:** The ALU (Arithmetic Logic Unit) adds one to that register (`add r0, r0, #1`).
+3. **Store:** The CPU writes the new value (`2`) back into `func1`'s stack memory.
+
+---
+
+## **5. The Return: "Collapsing the Frame"**
+When `func1` hits `return`:
+* **Restore BP:** The instruction `ldr bp, [sp, #8]` grabs the "Old BP" (1024) and puts it back in the BP register.
+* **Jump Back:** The CPU sets the **PC** to the value stored in the **LR** (the return address in `main`).
+* **Deallocate:** The SP is moved back up (`add sp, sp, #8`), and `func1`'s memory is effectively "gone."
+
+---
+
+## **6. The "Restore" Phase: Picking up the Pieces**
+When we return to `main`, we have a problem: `func1` might have messed up our registers (**r0, r1, r3**).
+* **`ldr r0, [bp, #-8]`**: `main` re-loads its own variables (`a` and `b`) from its stack back into the registers so it can finally perform `c = a + b`.
+
+---
+
+## **7. The "Stack Overflow" Safety Net**
+This final snapshot explains why the stack isn't infinite:
+* **The Limit:** The OS assigns a fixed size to the stack. 
+* **The Crash:** If you have **infinite recursion** (a function calling itself forever) or **massive local variables** (like `int arr[1000000]`), the **SP** will eventually move outside the memory range the OS has authorized for your process.
+* **The Result:** The hardware triggers a **General Protection Fault**, and the OS kills your program with a "Stack Overflow" error to prevent you from corrupting other processes.
+
+---
+
+## **Master Interview Summary for your Notes**
+
+| Concept | The "Senior Dev" Explanation |
+| :--- | :--- |
+| **Function Call** | A two-part process: Saving the current context (BP/LR) and jumping the PC to a new memory address. |
+| **Prologue/Epilogue** | The "Hidden" assembly code at the start/end of every C++ function that manages the stack frame. |
+| **Register Spill** | When the CPU re-loads variables from memory because a sub-function likely overwrote the physical registers. |
+| **Stack Overflow** | A hardware-enforced limit on how far the Stack Pointer can grow downward before it hits unauthorized memory. |
+
+### **Final Visualization for your Mind:**
+Imagine the CPU is a laser pointer (The **PC**). The Memory is a long strip of film. The **Stack** is a specialized area of that film where we keep "bookmarks" (BP) and "notes" (local variables). As the laser moves through the film, it constantly refers to the bookmarks to know where it is and where it needs to go next.
+
+
+**You have officially completed the walkthrough of how a process lives, breathes, and executes. Do you have any final questions about this "Software to Hardware" journey?**

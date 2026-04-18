@@ -1,0 +1,245 @@
+## TLB and Eviction — Insight
+
+---
+
+### What TLB Actually Is
+
+```
+Every memory access needs translation:
+  Virtual address → physical address
+  That translation lives in the PAGE TABLE in RAM.
+
+Problem:
+  Page table is IN RAM.
+  To access RAM you need to translate.
+  To translate you need to access RAM.
+  Circular. Every access costs TWO RAM reads.
+  That doubles all memory latency. Unacceptable.
+
+Solution — TLB:
+  Small, ultra-fast SRAM cache INSIDE the MMU.
+  Stores recent virtual → physical translations.
+  ~64 to 1024 entries depending on CPU.
+  Hit rate typically >99%.
+
+  TLB hit  → translation in 1 cycle. No RAM touch.
+  TLB miss → walk page table in RAM → slow → update TLB.
+```
+
+---
+
+### TLB Is Just a Cache for Translations
+
+```
+Think of it exactly like L1 cache but specifically for
+address translations, not data.
+
+L1 cache:   stores recently used DATA
+TLB:        stores recently used TRANSLATIONS
+
+Same principle. Same reason. Same benefit.
+Locality of reference makes both work.
+```
+
+---
+
+### The Insight — Why TLB Works So Well
+
+```
+Your program doesn't jump randomly around memory.
+It runs loops. It accesses arrays sequentially.
+It calls the same functions repeatedly.
+
+Loop running 1 million iterations:
+  All iterations access the same few pages.
+  TLB loads those page translations ONCE.
+  999,999 iterations → TLB hit → free translation.
+
+Sequential array access:
+  array[0] to array[999] → probably all in same page.
+  One TLB entry covers all 1000 accesses.
+  1 TLB miss. 999 TLB hits.
+
+Locality of reference saves you.
+```
+
+---
+
+### TLB Miss — What Actually Happens
+
+```
+CPU accesses virtual address 0x5000.
+TLB: "I don't have that translation."
+
+Hardware Page Table Walk:
+  1. Read CR3 register → physical address of page table
+  2. Read page table entry from RAM  (1 RAM access)
+  3. Get physical address
+  4. Store in TLB for next time
+  5. Retry the original memory access
+
+Cost: 1 extra RAM read minimum.
+      Multi-level page tables (x86-64 uses 4 levels):
+      4 RAM reads just for translation.
+      Then 1 RAM read for actual data.
+      = 5 RAM reads total for one miss.
+
+This is why TLB misses hurt so much.
+```
+
+---
+
+### TLB Eviction — The Hard Problem
+
+```
+TLB has only ~64–1024 slots.
+Your program uses thousands of pages.
+TLB fills up. Old entries must be evicted.
+
+TLB eviction policy:
+  Usually LRU (Least Recently Used) or pseudo-LRU.
+  Least recently used translation gets thrown out.
+  If you need it again → TLB miss → page table walk.
+
+When TLB is under pressure:
+  Large working set → many pages → TLB can't hold all translations
+  → constant misses → constant page table walks
+  → every memory access costs 5 RAM reads
+  → performance collapses
+
+This is called TLB THRASHING.
+Different from page fault thrashing but equally bad.
+```
+
+---
+
+### Context Switch — The TLB Killer
+
+```
+When OS switches from Process A to Process B:
+
+  Process A's TLB entries are WRONG for Process B.
+  Virtual address 0x1000 in A ≠ virtual address 0x1000 in B.
+  Must flush entire TLB.
+
+  After flush:
+  TLB is completely empty (cold).
+  First N accesses by Process B → all TLB misses.
+  TLB slowly warms up again.
+
+This is why context switches are expensive beyond registers.
+Heavy multitasking = frequent TLB flushes = cold TLB constantly.
+
+Fix — ASID (Address Space ID):
+  Tag each TLB entry with process ID.
+  A's entries tagged "process A".
+  B's entries tagged "process B".
+  No flush needed on switch.
+  Both coexist in TLB simultaneously.
+  Used in ARM. x86 calls it PCID.
+```
+
+---
+
+### Huge Pages — The TLB Trick
+
+```
+Normal page = 4KB → one TLB entry covers 4KB of memory.
+Huge page  = 2MB → one TLB entry covers 2MB of memory.
+
+Same number of TLB entries.
+But each entry covers 512× more memory.
+
+Example:
+  1GB working set with 4KB pages:
+    1GB / 4KB = 262,144 TLB entries needed.
+    TLB only has 1024 slots.
+    Constant misses.
+
+  1GB working set with 2MB huge pages:
+    1GB / 2MB = 512 TLB entries needed.
+    TLB has 1024 slots.
+    Everything fits. No misses.
+
+This is why databases (PostgreSQL, Redis) use huge pages.
+Dramatically reduces TLB pressure on large datasets.
+```
+
+---
+
+### Eviction in Page Table (swap eviction)
+
+```
+When RAM is full and a new page must be loaded:
+OS must evict an existing page.
+
+How OS picks the victim:
+
+LRU (Least Recently Used):
+  Evict the page not accessed for the longest time.
+  Best policy in theory.
+  Expensive to implement perfectly (track every access).
+
+Clock algorithm (approximate LRU):
+  Each page has an "accessed" bit.
+  CPU sets it to 1 on every access.
+  OS sweeps through pages like a clock hand.
+  If bit = 1 → clear it, move on (give it a second chance).
+  If bit = 0 → evict this page (wasn't used since last sweep).
+  Used in Linux.
+
+Dirty vs Clean eviction:
+  Clean page (unmodified) → just discard, already on disk.
+  Dirty page (modified)   → must write to disk first, then discard.
+  OS always prefers evicting clean pages → no disk write needed.
+```
+
+---
+
+### The Full Picture
+
+```
+Access virtual address X:
+  ↓
+TLB hit?
+  YES → physical address in 1 cycle → done
+  NO  ↓
+Page table walk (4 RAM reads on x86-64)
+  ↓
+Page in RAM?
+  YES → update TLB → access data → done
+  NO  ↓
+Page fault
+  ↓
+RAM full?
+  NO  → load page from disk → update page table → update TLB → done
+  YES ↓
+Evict a page (LRU/Clock)
+  Dirty? → write to disk first
+  Clean? → just discard
+  ↓
+Load missing page from disk
+  ↓
+Update page table + TLB
+  ↓
+Resume process
+```
+
+---
+
+### One-Line Interview Answers
+
+**"What is the TLB?"**
+A small SRAM cache inside the MMU storing recent virtual→physical translations so page table lookups (which require RAM accesses) are avoided on >99% of memory accesses.
+
+**"What happens on a TLB miss?"**
+MMU walks the page table in RAM (up to 4 RAM reads on x86-64), loads the translation into the TLB, then retries the original access.
+
+**"Why is TLB flushed on context switch?"**
+Each process has different virtual→physical mappings — A's TLB entries are wrong for B, so they must be invalidated unless ASID/PCID tagging is used to let both coexist.
+
+**"What are huge pages and why do they help?"**
+2MB pages instead of 4KB — each TLB entry covers 512× more memory, so the same number of TLB slots covers a much larger working set, dramatically reducing TLB misses for large datasets.
+
+**"How does the OS pick which page to evict?"**
+Linux uses the Clock algorithm — an approximation of LRU. Pages with the accessed bit set get a second chance; pages with it cleared get evicted. Clean pages are preferred since they need no disk write.

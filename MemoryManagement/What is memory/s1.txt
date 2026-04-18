@@ -1,0 +1,298 @@
+# Memory — Master Notes
+
+---
+
+## 0. The Core Tension
+
+Every memory technology is a trade-off on one triangle:
+**Speed ↔ Cost ↔ Capacity** — you can't have all three.
+
+---
+
+## 1. Two Families
+
+```
+Volatile     → loses data without power  → fast  → RAM (SRAM, DRAM)
+Non-Volatile → persists without power    → slow  → ROM, Flash, SSD, HDD
+```
+
+---
+
+## 2. Memory Hierarchy
+
+```
+FASTEST, SMALLEST, MOST EXPENSIVE
+─────────────────────────────────
+  Registers     │ ~0.3 ns  │ flip-flops inside CPU ALU
+  SRAM (cache)  │ 0.5–2 ns │ L1/L2/L3 · 6 transistors/bit · no refresh
+  DRAM (RAM)    │ 10–100ns │ 1T+1C/bit · needs refresh every 64ms
+  NAND Flash    │ 50–100µs │ floating-gate T · non-volatile · wears out
+  HDD           │ 5–10 ms  │ magnetic platters · cheapest/largest
+─────────────────────────────────
+SLOWEST, LARGEST, CHEAPEST
+```
+
+---
+
+## 3. SRAM
+
+```
+Structure:    1 bit = 6 MOSFETs (1 flip-flop)
+              4 transistors = cross-coupled inverters (hold state)
+              2 transistors = access control
+
+Why fast:     State held actively by transistors — no capacitor to charge/discharge
+              Read = just sense which inverter output is HIGH
+Why costly:   6T per bit vs DRAM's 1T → huge chip area → expensive
+Refresh:      NEVER needed (transistors hold state as long as power is on)
+
+Used in:      L1 cache (~1–4 cycles), L2 (~10–20), L3 (~40), TLB, register file
+```
+
+---
+
+## 4. DRAM
+
+```
+Structure:    1 bit = 1 transistor (access gate) + 1 capacitor (storage)
+              Charged cap = 1,  Discharged cap = 0
+
+Why cheap:    Capacitor is tiny → very dense → low cost per bit
+Why slow:     Read is DESTRUCTIVE — charge drains off cap during read
+              Must write data back after every read (extra step)
+Why refresh:  Capacitors LEAK charge → data lost in ~64ms without refresh
+              Controller reads+rewrites every row periodically
+              During refresh → that row is UNAVAILABLE
+```
+
+**Read cycle:**
+```
+1. Open row (RAS)      → slow  → tRCD delay
+2. Read column (CAS)   → fast  → CL delay
+3. Write back          → mandatory (destructive read)
+4. Precharge (close)   → tRP delay → needed before next row
+```
+
+---
+
+## 5. DRAM Internals
+
+```
+DIMM  (the physical stick)
+  └── Bank  (independent 2D array, ~8–16 banks per chip)
+        └── Row  (~32,768 rows per bank)
+              └── Column  (~1,024 columns per row)
+                    └── Cell  (1T + 1C = 1 bit)
+
+The CPU's 64-bit address encodes: DIMM → Bank → Row → Column
+This decoded form = DRAM address
+```
+
+**Row buffer (sense amplifiers):**
+```
+Each bank has ONE set of sense amplifiers
+Opening a row latches the ENTIRE row into the row buffer
+Row buffer = tiny cache inside DRAM itself
+
+Row HIT  → skip RAS, pay only CAS latency  → fast
+Row MISS → close old row (tRP) + open new (tRCD) + CAS → slow
+
+Why many banks help:
+  Only 1 row open per bank at a time
+  Multiple banks operate in PARALLEL
+  Bank 0 precharging while bank 1 is serving → latency hidden
+```
+
+---
+
+## 6. Asynchronous vs Synchronous DRAM
+
+```
+Async DRAM (old):
+  RAM and CPU on independent clocks
+  CPU sends request → stalls → waits for RAM to respond in its own time
+  Unpredictable latency, wasted cycles, refresh causes random stalls
+
+SDRAM (Synchronous, ~1996+):
+  RAM locked to CPU clock
+  CPU knows EXACTLY which cycle data will arrive
+  No stall/polling → enables pipelining
+  Latency measured in clock cycles (CL14 = 14 cycles)
+```
+
+---
+
+## 7. DDR — Double Data Rate
+
+```
+SDRAM   → transfer on rising clock edge only  → 1× rate
+DDR     → transfer on BOTH edges (rise + fall) → 2× rate, same clock
+
+Clock:  ___/‾‾‾\___/‾‾‾\___
+              ↑   ↑   ↑   ↑   ← transfer on every edge
+
+DDR speed notation:
+  DDR4-3200 = 1600 MHz clock × 2 edges = 3200 MT/s
+  Always quote MT/s in interviews, not MHz
+```
+
+---
+
+## 8. DDR4 vs DDR5
+
+```
+Property           DDR4                    DDR5
+-------------------|------------------------|---------------------------
+Bus per DIMM       | 1 × 64-bit channel    | 2 × 32-bit channels
+Prefetch/pin       | 8 bits                | 16 bits
+Bytes per burst    | 64 pins × 8 = 64 B   | 32 pins × 16 = 64 B × 2ch
+Total bandwidth    | 64 bytes              | 128 bytes
+Speed              | 2133–3200 MT/s        | 4800–6400+ MT/s
+Voltage            | 1.2V                  | 1.1V
+On-die ECC         | No                    | Yes
+Power mgmt         | Motherboard           | On DIMM (PMIC)
+```
+
+**Why DDR5 uses two 32-bit channels:**
+Two independent channels service two requests simultaneously → less contention, lower per-channel capacitance → higher frequency possible.
+
+---
+
+## 9. Key Timing Parameters
+
+```
+CL   (CAS Latency)   cycles from column request → data out. Lower = better.
+tRCD                 cycles to open a row (RAS to CAS delay)
+tRP                  cycles to close/precharge a row
+tRAS                 minimum time a row must stay open
+
+Full random access latency = tRCD + CL + tRP
+
+Quoted as e.g. 16-18-18-38 (CL-tRCD-tRP-tRAS)
+```
+
+---
+
+## 10. Non-Volatile Memory
+
+```
+ROM:        Mask-programmed at manufacture. Read-only. Used for firmware.
+EEPROM:     Electrically erasable ROM. Slow, byte-addressable.
+NAND Flash: Floating-gate transistor. Charge trapped in oxide = non-volatile.
+            Write in PAGES, erase in BLOCKS (can't overwrite — must erase first)
+            Wear limits: SLC ~100k, MLC ~10k, TLC ~3k write cycles
+            Used in: SSDs, USB drives, eMMC, phones
+```
+
+---
+
+## 11. Master Comparison Table
+
+```
+Type       │ Structure     │ Volatile │ Refresh │ Speed     │ Cost  │ Use
+───────────┼───────────────┼──────────┼─────────┼───────────┼───────┼──────────────
+Registers  │ Flip-flops    │ Yes      │ No      │ ~0.3 ns   │ ████  │ CPU ops
+SRAM       │ 6T flip-flop  │ Yes      │ No      │ 0.5–2 ns  │ ███   │ CPU cache
+DRAM       │ 1T + 1C       │ Yes      │ Yes     │ 10–100 ns │ ██    │ Main RAM
+Flash      │ Floating-gate │ No       │ No      │ 50–100 µs │ █     │ SSD/USB
+HDD        │ Mag. platter  │ No       │ No      │ 5–10 ms   │ ░     │ Bulk storage
+```
+
+---
+
+## 12. One-Line Interview Answers
+
+**SRAM vs DRAM:**
+SRAM uses 6-transistor flip-flops — fast, no refresh, expensive. DRAM uses 1T+1C — dense, cheap, but capacitors leak so it needs refresh, and reads are destructive requiring a write-back.
+
+**Why DRAM needs refresh:**
+Capacitors leak charge and lose their state in ~64ms. The memory controller must periodically re-read and re-write every row before that window expires.
+
+**What SDRAM fixed:**
+Async DRAM had no timing relationship with the CPU — stalls were unpredictable. SDRAM syncs RAM to the CPU clock so data arrives on a known cycle, enabling pipelining.
+
+**What DDR is:**
+Transfers data on both rising and falling clock edges, doubling bandwidth without increasing clock frequency.
+
+**What the prefetch buffer is:**
+The number of bits fetched from the cell array per IO pin per access. DDR4 = 8 bits/pin × 64 pins = 64 bytes per burst — exactly one CPU cache line.
+
+**Why 64 bytes is the magic number:**
+CPU cache lines are 64 bytes. The entire memory subsystem — bus width, prefetch size, burst length — is co-designed to deliver exactly one cache line per burst read.
+
+**Why many banks help:**
+Each bank can only have one row open at a time. Multiple banks operate in parallel, so one bank can be precharging while another is serving a request — hiding latency through interleaving.
+
+## MOSFETs vs Flip-Flops — Quick Explainer
+
+---
+
+### MOSFET (the building block)
+
+```
+MOSFET = Metal Oxide Semiconductor Field Effect Transistor
+
+It is a SWITCH. That's it.
+  Gate voltage HIGH → switch ON  → current flows
+  Gate voltage LOW  → switch OFF → current blocked
+
+One MOSFET alone stores nothing.
+It is a component used TO BUILD things that store data.
+```
+
+---
+
+### Flip-Flop (built FROM MOSFETs)
+
+```
+A flip-flop is a circuit made of 6 MOSFETs wired in a
+specific pattern called cross-coupled inverters.
+
+Two inverters fight each other and lock into one of two stable states:
+  State A: left=1, right=0  → stores a 1
+  State B: left=0, right=1  → stores a 0
+
+It holds that state ACTIVELY as long as power is on.
+No capacitor. No refresh. No decay.
+Just transistors holding each other in a stable loop.
+
+This is what SRAM uses. 1 bit = 1 flip-flop = 6 MOSFETs.
+```
+
+```
+Simplified cross-coupled inverter pair:
+
+     ┌──[INV A]──┐
+  ───┤           ├───
+     └──[INV B]──┘
+     
+  Output of A feeds input of B
+  Output of B feeds input of A
+  They lock each other → stable state
+```
+
+---
+
+### DRAM uses MOSFETs differently
+
+```
+DRAM does NOT use a flip-flop.
+1 bit = 1 MOSFET (as a gate) + 1 capacitor (as storage)
+
+The MOSFET just opens/closes access to the capacitor.
+The capacitor holds the charge = the actual bit.
+No active holding. Charge leaks → needs refresh.
+
+Cheaper: 1 component vs 6
+Weaker:  passive storage vs active holding
+```
+
+---
+
+### One-line summary
+
+```
+MOSFET   = a transistor switch (hardware primitive)
+Flip-flop = 6 MOSFETs wired to actively hold 1 bit (SRAM)
+Capacitor = passive charge storage for 1 bit (DRAM) — leaks over time
+```

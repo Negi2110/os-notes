@@ -1,0 +1,62 @@
+Great question. The answer is — **the OS decides, not the process.**
+
+---
+
+### The Process Just Asks for Memory Normally
+
+```
+Process A loads Chrome.
+Process B loads Chrome.
+
+Both just say to the OS:
+  "give me memory for my code segment"
+
+Neither process says "use shared memory".
+Neither process knows or cares.
+```
+
+---
+
+### The OS Is the One Who Notices
+
+```
+OS loads Chrome's binary from disk into RAM.
+
+Process A starts → OS loads Chrome code → physical page 500
+Process B starts → OS checks: "do I already have this binary in RAM?"
+                              YES → don't load again
+                              just map Process B's virtual page
+                              → to the SAME physical page 500
+
+Process A virtual page 3  → physical page 500
+Process B virtual page 3  → physical page 500  ← OS did this silently
+```
+
+---
+
+### How OS Knows It's the Same
+
+```
+OS tracks every file loaded into RAM by its INODE
+(unique file identifier on disk).
+
+Same inode = same file = safe to share physical pages.
+
+Chrome binary inode = 8821
+  Process A loads it → physical pages 500–600
+  Process B loads it → OS sees inode 8821 already in RAM
+                     → reuses pages 500–600
+                     → just adds new page table entries
+```
+
+---
+
+### The One-Line Answer
+
+```
+The process never knows.
+The OS silently maps the same physical pages
+into multiple virtual address spaces
+when it recognises the same file/data is already in RAM.
+The processes just see their own normal virtual addresses.
+```

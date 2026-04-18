@@ -1,0 +1,144 @@
+## Page Fault — The Story
+
+---
+
+### Set the scene
+
+```
+Your program has a virtual address space 0 → 10GB.
+Physical RAM is only 8GB.
+Not everything can be in RAM at once.
+
+Think of RAM as your DESK.
+Think of SSD/disk as your FILING CABINET.
+You can only work on what's on your desk.
+Everything else sits in the cabinet.
+```
+
+---
+
+### The Moment It Happens
+
+```
+Your code runs this line:
+  int x = myArray[1000000];
+
+CPU generates virtual address for myArray[1000000].
+MMU goes to page table to translate it.
+
+Page table entry says:
+  "this page is NOT on your desk (RAM)
+   it's in the filing cabinet (disk)"
+
+MMU cannot continue.
+It pulls the emergency cord.
+CPU stops your program mid-instruction.
+Jumps to OS.
+```
+
+---
+
+### OS Takes Over
+
+```
+OS fault handler wakes up and asks 3 questions:
+
+Question 1: Is this a valid address?
+  Does this process even OWN this address?
+  Is it in the page table at all?
+    NO  → you're accessing memory you don't own
+         → SEGFAULT → process killed
+    YES → continue
+
+Question 2: Is there a free slot on the desk (RAM)?
+    YES → great, load the page directly
+    NO  → need to make room first (eviction)
+
+Question 3: (if no free slot) Which page do I evict?
+    OS picks the COLDEST page (least recently used)
+    If that page is DIRTY (modified) → write it to disk first
+    If that page is CLEAN (unmodified) → just discard it
+    Now there is a free slot
+```
+
+---
+
+### The Load and Resume
+
+```
+OS loads the missing page from disk → RAM.
+Updates the page table:
+  Before:  virtual page 4000 → ON DISK (swap index 77)
+  After:   virtual page 4000 → physical page 312
+
+OS resumes your program from the EXACT instruction that faulted.
+Your program retries the same memory access.
+This time MMU finds it in RAM.
+Everything continues normally.
+
+Your program never knew any of this happened.
+The whole thing is invisible to your code.
+```
+
+---
+
+### The Cost — Why It Matters
+
+```
+Normal RAM access:        50–100 ns
+Page fault from SSD:      ~100,000 ns  (100µs)   → 1,000× slower
+Page fault from HDD:      ~10,000,000 ns (10ms)  → 100,000× slower
+
+One page fault = cost of 1,000 normal RAM accesses.
+
+If your program causes page faults constantly:
+  → called THRASHING
+  → system spends all time moving pages in/out
+  → no real work gets done
+  → everything freezes
+```
+
+---
+
+### The Three Types of Page Fault
+
+```
+1. Minor page fault (soft)
+   Page exists in RAM but MMU wasn't told about it yet.
+   OS just updates the page table. No disk access.
+   Very cheap — microseconds.
+   Common when: process first accesses a freshly allocated page.
+
+2. Major page fault (hard)
+   Page is genuinely not in RAM. Must load from disk.
+   Expensive — 100µs to 10ms.
+   Common when: swap is being used, or first run of a program.
+
+3. Invalid fault
+   Address is not in the page table at all.
+   Process is accessing memory it doesn't own.
+   OS sends SIGSEGV → segfault → process dies.
+```
+
+---
+
+### The Interview Story (say exactly this)
+
+```
+"When a process accesses a virtual address whose page
+isn't in RAM, the MMU triggers a page fault interrupt.
+
+The OS handler checks if the address is valid —
+if not, it's a segfault and the process dies.
+
+If valid, the OS finds the page on disk, evicts a cold page
+from RAM if needed (writing it back to disk if dirty),
+loads the missing page into that free slot,
+updates the page table, and resumes the process
+from the exact instruction that faulted.
+
+The process never knows it happened.
+The cost is ~100µs from SSD vs 50ns for a normal RAM access —
+about 1000× slower — which is why avoiding page faults
+matters for performance-critical code."
+```

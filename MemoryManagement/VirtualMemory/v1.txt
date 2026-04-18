@@ -1,0 +1,228 @@
+# Virtual Memory — Master Notes
+
+---
+
+## 0. The Core Idea
+
+```
+Virtual memory is a lie the OS tells each process.
+
+Every process thinks it has the entire address space to itself.
+Reality: multiple processes share one physical RAM.
+The OS + hardware quietly maps the lie to reality.
+```
+
+---
+
+## 1. Why Virtual Memory Exists — Problems with Physical Memory
+
+---
+
+### Problem 1 — Fragmentation
+
+```
+Physical RAM over time:
+
+  [Process A][     free     ][Process B][  free  ][Process C]
+
+Free memory exists but in scattered small chunks.
+A new process needs 500MB contiguous — none available.
+Even though total free > 500MB, no single block is big enough.
+
+This is EXTERNAL FRAGMENTATION.
+Physical memory has no solution to this without moving everything.
+```
+
+---
+
+### Problem 2 — Shared Memory
+
+```
+Without virtual memory:
+  Two processes that need the same library (e.g. libc)
+  must each load their own FULL COPY into RAM.
+  10 processes × 2MB libc = 20MB wasted.
+
+With virtual memory:
+  One physical copy of libc in RAM.
+  Each process has a virtual address that maps to the SAME physical page.
+  10 processes × 0MB extra = 0MB wasted.
+```
+
+---
+
+### Problem 3 — Isolation
+
+```
+Without virtual memory:
+  Process A can read/write any physical address.
+  Bug in Process A can corrupt Process B's memory.
+  Bug in Process A can corrupt the OS kernel.
+  This is catastrophic.
+
+With virtual memory:
+  Each process only sees its OWN virtual address space.
+  Process A literally cannot form an address that reaches Process B.
+  OS enforces this in hardware (MMU).
+  One process crashing cannot affect another.
+```
+
+---
+
+### Problem 4 — Large Programs
+
+```
+Without virtual memory:
+  Program must fit entirely in physical RAM to run.
+  16GB program on 8GB RAM = impossible.
+
+With virtual memory:
+  Only the CURRENTLY NEEDED pages live in RAM.
+  Rest sit on disk (swap space).
+  OS swaps pages in/out as needed.
+  Program can be larger than physical RAM.
+  (Slowdown when swapping — disk is µs–ms vs RAM's 50–100ns)
+```
+
+---
+
+## 2. How Virtual Memory Works
+
+```
+Every process has a VIRTUAL address space (e.g. 0x0000 → 0xFFFF...)
+These are FAKE addresses — they mean nothing to hardware directly.
+
+MMU (Memory Management Unit) — chip inside CPU:
+  Translates virtual address → physical address
+  On every single memory access, automatically, in hardware.
+
+Page Table:
+  A map stored in RAM, one per process.
+  Entry: virtual page number → physical page number
+  OS maintains this. MMU reads it.
+
+Page:
+  Memory is divided into fixed chunks called pages.
+  Typically 4KB each.
+  Translation happens at page granularity.
+```
+
+---
+
+## 3. Address Translation Flow
+
+```
+Process accesses virtual address 0x1234:
+
+  CPU generates virtual address 0x1234
+       ↓
+  MMU splits it:
+    Page number  = 0x1234 / 4096 = page 0
+    Offset       = 0x1234 % 4096 = 0x234
+       ↓
+  MMU looks up page 0 in page table
+    → physical page = 52
+       ↓
+  Physical address = 52 × 4096 + 0x234 = 0xD234
+       ↓
+  RAM at 0xD234 is accessed
+```
+
+---
+
+## 4. Page Fault
+
+```
+Process accesses a virtual address whose page is NOT in RAM:
+
+  MMU looks up page table → page not present → PAGE FAULT
+
+  OS handles it:
+    1. Find the page on disk (swap space)
+    2. Load it into a free physical page in RAM
+    3. Update the page table
+    4. Resume the process — it never knew anything happened
+
+If RAM is full:
+    OS must EVICT a page first (write it to disk if dirty)
+    Then load the new page
+    This is called SWAPPING or PAGING
+    Cost: disk access = µs–ms (1000× slower than RAM)
+```
+
+---
+
+## 5. TLB — Translation Lookaside Buffer
+
+```
+Problem:
+  Every memory access needs a page table lookup.
+  Page table is IN RAM → every access costs an extra RAM read.
+  That doubles every memory access latency. Unacceptable.
+
+Solution — TLB:
+  Small SRAM cache inside the MMU (~64–1024 entries).
+  Stores recently used virtual→physical translations.
+  Hit rate typically >99%.
+
+  TLB hit  → translation in ~1 cycle (no RAM access needed)
+  TLB miss → walk the page table in RAM → update TLB → retry
+```
+
+---
+
+## 6. Limitations of Virtual Memory
+
+```
+1. Swap is slow
+   Page fault → disk access → 1000× slower than RAM
+   Heavy swapping = system feels frozen ("thrashing")
+
+2. Page table memory overhead
+   Each process needs a page table
+   Many processes = significant RAM used just for bookkeeping
+
+3. TLB pressure
+   Large working sets → TLB misses → page table walks → slower
+
+4. Complexity
+   Harder to reason about memory layout
+   Security bugs possible (Spectre, Meltdown exploited VM mechanisms)
+
+5. Fragmentation not fully solved
+   Internal fragmentation still exists
+   A process using 1 byte of a 4KB page wastes 4095 bytes
+```
+
+---
+
+## 7. Summary Table
+
+```
+Problem                  Physical Memory Fix?   Virtual Memory Fix?
+─────────────────────────────────────────────────────────────────
+Fragmentation            No                     Yes (pages fill gaps)
+Shared libraries         No (each gets a copy)  Yes (map same physical page)
+Process isolation        No                     Yes (separate address spaces)
+Program > RAM size       No                     Yes (swap to disk)
+One crash kills all      No                     Yes (MMU enforces boundaries)
+```
+
+---
+
+## 8. One-Line Interview Answers
+
+**"What is virtual memory?"**
+An abstraction where each process gets its own private address space; the OS and MMU transparently map virtual addresses to physical RAM at page granularity.
+
+**"What is a page fault?"**
+When a process accesses a virtual page that isn't currently in RAM — the OS loads it from disk, updates the page table, and resumes the process transparently.
+
+**"What is the TLB?"**
+A small SRAM cache inside the MMU storing recent virtual→physical translations, so page table lookups (which require a RAM access) are avoided on >99% of accesses.
+
+**"How does virtual memory solve fragmentation?"**
+Physical RAM is divided into fixed 4KB pages that can be scattered anywhere. A process's contiguous virtual address space maps to non-contiguous physical pages — the gaps between physical pages are invisible to the process.
+
+**"How does virtual memory provide isolation?"**
+Each process has its own page table. A process can only generate addresses within its own virtual space — the MMU makes it physically impossible to address another process's memory.

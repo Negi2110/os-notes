@@ -1,0 +1,61 @@
+This snapshot introduces the concept of a **Thread**, which is a crucial "step up" from understanding a Process. If a Process is a house, Threads are the different people living in that house—sharing the kitchen and living room (Heap/Data) but having their own private bedrooms (Stacks).
+
+As a **C++ developer**, this is where you live. Managing threads is how you achieve high performance.
+
+---
+
+## **1. Core Definition: The "Lightweight Process"**
+A thread is the smallest unit of execution that the OS can schedule. It is "lightweight" because it doesn't need its own brand-new memory space; it hitches a ride on the existing Process.
+
+---
+
+## **2. What is Shared? (The "Common Room")**
+Threads within the same process share almost everything. This makes communication between them very fast, but also dangerous (race conditions).
+* **Text / Code:** All threads run the same binary code.
+* **Data (Static):** All threads can read and write to global variables.
+* **Heap:** If Thread 1 allocates memory using `new` or `malloc`, Thread 2 can see and use that memory.
+* **PCB (Process Control Block):** They share the overall process metadata (PID, open files, permissions).
+
+---
+
+## **3. What is Unique? (The "Private Space")**
+Even though they share the house, each thread needs its own "brain" and "to-do list" to work independently.
+* **Thread Stack:** This is the most important visual in your image. Every thread gets its own **private stack segment**. This is where its local variables and function call history live.
+* **Program Counter (PC):** Each thread is likely at a different line of code. Thread 1 might be in a `for` loop, while Thread 2 is waiting for a network response.
+* **Registers:** Each thread has its own set of CPU register values saved when it's not currently running.
+
+
+---
+
+## **4. Visualization Summary for Notes**
+
+| Feature | Process | Thread |
+| :--- | :--- | :--- |
+| **Memory** | Isolated (Dedicated Stack/Heap/Data) | Shared (Shared Heap/Data/Code) |
+| **Creation** | Heavy (Slow, uses `fork()`) | Lightweight (Fast) |
+| **Communication** | Difficult (Needs IPC like Pipes/Sockets) | Easy (Can just use global variables) |
+| **Privacy** | High (Crash in one doesn't affect others) | Low (Crash in one can kill the whole process) |
+
+---
+
+## **5. Interview "Deep Dive" for C++ Devs**
+
+### **The "Same VM" Concept**
+Your diagram mentions "Thread Stack lives in same VM (Virtual Memory)."
+* **The Insight:** Since all threads are in the same address space, a pointer in Thread 1 can technically point to a local variable on Thread 2's stack. This is usually a **huge bug** (dangling pointers), but it's possible because there is no hardware memory protection between threads of the same process.
+
+### **The TCB (Thread Control Block)**
+Just like the Process has a PCB, each thread has a **TCB**.
+* The TCB is a smaller version of the PCB that only stores the **Thread ID, Thread State, PC, and Registers**.
+* The PCB of a multi-threaded process actually contains a **list of pointers to TCBs**.
+
+### **The "Why" (Interview Answer)**
+> "We use threads because switching between them is much faster than switching between processes. A **thread context switch** doesn't require changing the memory map (Page Tables), whereas a **process context switch** does. For a C++ dev, this means lower latency and better CPU utilization."
+
+
+---
+
+### **Master Note for your Visualization:**
+"Imagine a process memory box. Instead of one single Stack at the top, you now see multiple **mini-stacks** (Main, Thread 1, Thread 2). They are all competing for the same space above the **Heap**. If you create too many threads, you run out of virtual memory space!"
+
+Does seeing the multiple stacks inside the same red "Process" box help you understand why threads are so much faster to create than processes?

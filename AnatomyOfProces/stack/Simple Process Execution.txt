@@ -1,0 +1,102 @@
+This final sequence of snapshots captures the "heartbeat" of a computer: the **Instruction Cycle** (Fetch-Decode-Execute).
+
+To help you understand this without needing the diagrams next time, think of the CPU as a very fast librarian and the Memory as a giant bookshelf. The **Program Counter (PC)** is the librarian's finger pointing to exactly which book to pull next.
+
+---
+
+## **1. The Hierarchy of Speed (Cost of Time)**
+Before looking at the cycle, you need to understand *where* data lives. The closer to the CPU, the faster it is.
+* **Registers ($1ns$):** The CPU's "hands." Instant access.
+* **L1/L2/L3 Caches ($2-15ns$):** The "desk." Very fast storage for things you are using right now.
+* **Main Memory (RAM) ($100ns$):** The "bookshelf." Much slower than the desk.
+* **Disk (SSD/HDD):** The "warehouse." Incredibly slow compared to the CPU.
+
+---
+
+## **2. The Step-by-Step Instruction Cycle**
+
+Here is the "movie" playing out in those diagrams:
+
+### **Step 1: Start & Fetch (The Pointer)**
+* **The Diagram:** Shows the **PC (Program Counter)** pointing to address `0xaabbcc00`.
+* **The Logic:** The CPU looks at the PC to find the next instruction address. It "fetches" the machine code (`mov r0, #1`) from that memory address and brings it into the **Instruction Register (IR)** inside the CPU.
+
+### **Step 2: Execute & Update (Moving Data)**
+* **The Diagram:** Shows the value `1` moving into register **r0**.
+* **The Logic:** The CPU performs the command. Simultaneously, it **Increments the PC**. Since each instruction here is 4 bytes, the PC moves from `...00` to `...04`. It is now already looking at the *next* instruction.
+
+### **Step 3: The Load/Add Sequence**
+* **The Diagram:** Shows the CPU fetching `mov r1, #3`, moving `3` into **r1**, and then fetching the `add` instruction.
+* **The Logic:** The CPU repeats the cycle. It fetches the `add` command, sees that it needs to combine **r0** (which has 1) and **r1** (which has 3), and stores the result ($4$) into register **r3**.
+
+### **Step 4: Store to Memory (The Finish)**
+* **The Diagram:** Shows an arrow pointing from the CPU back to a high memory address (`0xfffeeddc`).
+* **The Logic:** The final instruction `str r3, #0xfffeeddc` tells the CPU: "Take the result ($4$) currently in my hand (register **r3**) and put it back on the bookshelf (RAM) at this specific location."
+
+
+---
+
+## **3. How to read these diagrams in the future**
+When you see these again, look for three things to orient yourself:
+1.  **The Red Box (Text Segment):** This is the list of "To-Do" items. The red arrow (PC) tells you which item is being grabbed.
+2.  **The CPU Box (Registers):** This is the "Workspace." Watch how the numbers change inside the pentagons (r0, r1, r3).
+3.  **The Hex Addresses (0x...):**
+    * **Low Addresses (`0xaa...`):** Usually where the **Code** lives.
+    * **High Addresses (`0xff...`):** Usually where the **Stack/Data** lives.
+
+---
+
+## **4. Master Summary for your Notes**
+
+* **A Process is a Program in Motion:** It isn't just code; it's the code *plus* the current state of the registers and the PC.
+* **The Program Counter (PC) is King:** It is the only reason the CPU knows what to do next. If the PC gets corrupted, the program crashes (Segmentation Fault).
+* **The Cycle:** 1.  **Fetch:** Grab the instruction from the PC address.
+    2.  **Increment:** Move PC to the next address immediately.
+    3.  **Decode/Execute:** Do what the instruction says (math, move data, etc.).
+* **Byte Alignment:** Notice the PC jumps by **4 bytes** each time. This is because, in this architecture, every "sentence" (instruction) is exactly 4 bytes long.
+
+### **Interview "Mic Drop" Moment:**
+If an interviewer asks how a debugger works, you can now say: 
+> *"A debugger essentially allows me to 'pause' the Instruction Cycle, inspect the values inside the **Registers**, and see exactly where the **Program Counter** is pointing in the **Text Segment** of the process memory."*
+
+You've successfully traced a piece of C++ code from the disk, through the compiler, into the Process memory, and finally into the CPU's registers. You now understand the full stack! 
+
+
+
+Based on the snapshots you've shared, you have covered the **fundamental lifecycle** of a process, but from an interview perspective, there are two "missing links" that often separate a junior dev from a senior dev.
+
+The snapshots perfectly cover **The "What"** (Memory segments, PCB, TCB, PC, Registers). However, to be "complete," you should ensure your notes include the **"How"** and the **"Why"** regarding two specific areas:
+
+### 1. The "Interrupt" (How the PC actually stops)
+Your diagrams show the Program Counter (PC) moving smoothly from one instruction to the next. In an interview, they might ask: *"How does the OS take control back from the process if the PC is just happily incrementing?"*
+* **The Missing Concept:** **Hardware Interrupts/Timers**.
+* **Visualization:** Every few milliseconds, a hardware timer "pokes" the CPU. This forces the CPU to jump from the **Process Text Segment** to a specific location in the **Kernel Code**. This is how the OS pauses your process to save its state into the PCB.
+
+
+
+### 2. The Stack Frame (The "In-Depth" of the Stack)
+The snapshots show the **Stack** as a big box where local variables live. For a C++ dev, you need to visualize the **Stack Frame** (or Activation Record).
+* **The Missing Concept:** When you call a function, the PC doesn't just jump; it pushes the **Return Address** and the **Previous Frame Pointer** onto the stack.
+* **Why it matters:** This is how `f1()` knows to go back to `main()` when it's done. If you overwrite that return address (a "Buffer Overflow"), the PC will jump to a random location, which is a major security hole.
+
+
+
+---
+
+### **Completeness Check: Your Study Roadmap**
+
+| Topic | Covered in Snapshots? | Status |
+| :--- | :--- | :--- |
+| **Compilation (Code → Binary)** | ✅ Yes | Solid |
+| **Memory Layout (Stack/Heap/Text)** | ✅ Yes | Solid |
+| **CPU Context (PC/Registers)** | ✅ Yes | Solid |
+| **OS Management (PCB/TCB/Tables)** | ✅ Yes | Solid |
+| **Fork / Exec / CoW** | ✅ Yes | Solid |
+| **Interrupts & System Calls** | ❌ Partially | **Add to notes** |
+| **Stack Frame Mechanics** | ❌ Partially | **Add to notes** |
+
+### **Final Interview Tip for the "Simple Process Walkthrough"**
+If an interviewer asks you to walk through a process execution, conclude with the **"Cleanup"**:
+> "Once the PC reaches the final `return` or `exit()` instruction, the OS triggers a **System Call**. The Kernel looks up the **Process Table**, marks the PID as 'Terminated,' reclaims the **Physical Memory** mapped in the Page Table, and finally removes the **PCB** from the table."
+
+**Does adding that "Cleanup" and "Interrupt" logic make the story of the process feel complete in your mind?**

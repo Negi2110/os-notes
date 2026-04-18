@@ -1,0 +1,256 @@
+# CPU Architecture — RISC vs CISC — Master Notes
+
+---
+
+## 1. Two Philosophies of CPU Design
+
+```
+The question both answer:
+  "How should a CPU instruction be designed?"
+
+Two opposite answers:
+  RISC → make each instruction do ONE simple thing
+  CISC → make each instruction do as MUCH as possible
+```
+
+---
+
+## 2. RISC — Reduced Instruction Set Computer
+
+```
+Philosophy:
+  Simple instructions.
+  Each instruction = one task = one clock cycle.
+  Let the COMPILER do the heavy lifting.
+  Hardware stays simple, fast, predictable.
+
+Properties:
+  Fixed instruction size     → easy to fetch and decode
+  Load/Store architecture    → ALU ONLY operates on registers
+                               memory access = separate instructions
+  Many general registers     → reduces memory access needed
+  Simple decode              → enables deep pipelining
+  Low power                  → fewer transistors, less heat
+
+Examples:
+  ARM    → phones, tablets, Apple M1/M2/M3, Raspberry Pi
+  RISC-V → open source, embedded systems
+  MIPS   → routers, old gaming consoles
+```
+
+---
+
+## 3. CISC — Complex Instruction Set Computer
+
+```
+Philosophy:
+  Pack as much as possible into one instruction.
+  One instruction can read memory, compute, and write back.
+  Reduce the number of instructions the program needs.
+  Let the HARDWARE do the heavy lifting.
+
+Properties:
+  Variable instruction size  → harder to fetch/decode
+  Instructions touch memory  → one instruction can load+compute+store
+  Fewer registers needed     → instructions work on memory directly
+  Complex decode unit        → microcode translates to micro-ops
+  Higher power               → more transistors, more heat
+
+Examples:
+  x86 / x86-64  → Intel, AMD → desktops, laptops, servers
+  Everything you run on Windows/Linux is likely x86-64
+```
+
+---
+
+## 4. CISC vs RISC — Concrete Example
+
+```
+Operation:  a = a + b  (both are integers in memory)
+
+─────────────────────────────────────────────────────
+CISC — 1 instruction:
+  ADD a, b
+    → reads a from memory address
+    → reads b from memory address
+    → adds them
+    → stores result back to a
+    → all in ONE instruction
+
+RISC — 4 instructions:
+  LDR r0, a      → load value at address a into register r0
+  LDR r1, b      → load value at address b into register r1
+  ADD r0, r1     → add r0 + r1, store result in r0
+  STR r0, a      → store r0 back to memory address a
+
+CISC: fewer lines of assembly.
+RISC: more lines but each line is dead simple.
+─────────────────────────────────────────────────────
+```
+
+---
+
+## 5. Which Is Actually Faster?
+
+```
+CISC one instruction sounds faster. It's not that simple.
+
+CISC problem:
+  That one ADD instruction internally takes MULTIPLE cycles.
+  CPU must secretly break it into micro-operations:
+    micro-op 1: load a
+    micro-op 2: load b
+    micro-op 3: add
+    micro-op 4: store
+  Modern x86 CPUs translate CISC instructions into RISC-like micro-ops
+  internally. x86 is CISC on the outside, RISC on the inside.
+
+RISC advantage:
+  Fixed-size, simple instructions = easy to pipeline.
+  CPU can overlap multiple instructions simultaneously.
+  Predictable timing = easier to optimise.
+  Less power per operation = ARM dominates mobile.
+
+Modern reality:
+  The line is blurred.
+  x86 uses RISC micro-ops internally.
+  ARM has added some complex instructions.
+  Both are fast. The architecture matters less than implementation.
+```
+
+---
+
+## 6. Clock Speed
+
+```
+Clock speed = how many cycles per second the CPU runs.
+3GHz = 3 billion clock cycles per second.
+
+RISC at 3GHz:
+  Each instruction = 1 cycle (ideal).
+  3 billion instructions per second (theoretical max).
+  Pipelining means multiple instructions overlap.
+
+CISC at 3GHz:
+  Each instruction = multiple cycles.
+  Fewer instructions per second than clock speed suggests.
+  But micro-op pipelining closes much of the gap.
+
+Why clock speed alone is misleading:
+  IPC (Instructions Per Cycle) matters as much as GHz.
+  A 3GHz CPU with IPC=4 beats a 4GHz CPU with IPC=2.
+  Modern CPUs are superscalar — execute multiple instructions/cycle.
+  Apple M3 at 4GHz with high IPC beats x86 at 5GHz with lower IPC.
+
+Fetch/Decode cost:
+  Every instruction must be fetched from memory/cache.
+  Then decoded before ALU can execute.
+  CISC decode is complex → decode bottleneck.
+  Pipelining hides this: fetch instruction N+1 while decoding N.
+```
+
+---
+
+## 7. Pipelining — Why It Matters
+
+```
+Without pipelining:
+  Instruction 1: FETCH → DECODE → EXECUTE → done
+  Instruction 2: FETCH → DECODE → EXECUTE → done
+  Sequential. One at a time.
+
+With pipelining:
+  Cycle 1: FETCH  instr1
+  Cycle 2: DECODE instr1   FETCH  instr2
+  Cycle 3: EXEC   instr1   DECODE instr2   FETCH  instr3
+  Cycle 4:         done    EXEC   instr2   DECODE instr3 ...
+
+  All stages run in parallel like an assembly line.
+  One instruction completes per cycle (at steady state).
+  RISC enables deep pipelines because instructions are uniform.
+  CISC pipelines are shallower due to variable instruction complexity.
+```
+
+---
+
+## 8. RISC vs CISC — Where Each Wins Today
+
+```
+RISC wins:
+  Mobile phones     → ARM, low power critical
+  Tablets           → ARM
+  Apple Silicon     → M1/M2/M3, ARM-based, beats x86 in performance/watt
+  IoT devices       → ARM, RISC-V, ultra low power
+  Servers (growing) → AWS Graviton (ARM), cheaper per watt
+
+CISC wins:
+  Desktop PCs       → x86-64 (Intel/AMD), decades of software compatibility
+  Laptops           → x86-64 (except Apple which moved to ARM)
+  Data centres      → x86-64 still dominant (shrinking)
+  Legacy software   → compiled for x86, runs only on x86
+
+The big shift:
+  Apple M1 (2020) proved ARM can beat x86 in raw performance AND power.
+  This started the ARM server revolution.
+```
+
+---
+
+## 9. Display CPU Info (Mac Commands)
+
+```bash
+# Show L cache sizes
+sysctl -a | grep cachesize
+
+# Show number of physical CPU cores
+sysctl -n hw.physicalcpu
+
+# Show CPU architecture (arm64 or x86_64)
+uname -m
+```
+
+```bash
+# Linux equivalents:
+lscpu                          # full CPU info
+cat /sys/devices/system/cpu/cpu0/cache/index*/size   # cache sizes
+nproc                          # logical core count
+cat /proc/cpuinfo              # detailed per-core info
+```
+
+---
+
+## 10. Summary Table
+
+```
+Property              RISC                    CISC
+──────────────────────────────────────────────────────────
+Instruction size      Fixed                   Variable
+Cycles per instr      ~1                      Multiple
+Memory access         Load/Store only         Any instruction
+Decode complexity     Simple                  Complex (microcode)
+Pipeline depth        Deep (easy)             Shallower (harder)
+Power consumption     Low                     Higher
+Registers             Many                    Fewer
+Examples              ARM, RISC-V, MIPS       x86, x86-64
+Best for              Mobile, embedded, now   Desktop, server legacy
+                      servers too
+```
+
+---
+
+## 11. One-Line Interview Answers
+
+**"What is RISC?"**
+A CPU design where each instruction does one simple thing in one cycle — enables deep pipelining, low power, and predictable performance. Used in ARM (all phones, Apple Silicon).
+
+**"What is CISC?"**
+A CPU design where one instruction can do multiple operations (load, compute, store) — fewer instructions needed but each takes multiple cycles. Used in x86 (Intel/AMD desktops/servers).
+
+**"Why does x86 win on desktops despite RISC advantages?"**
+Decades of software compiled for x86 — compatibility lock-in. Modern x86 CPUs also translate CISC instructions to RISC micro-ops internally, recovering most of RISC's pipeline benefits.
+
+**"Why is ARM taking over?"**
+Performance per watt — ARM delivers competitive or superior performance while using far less power. Critical for mobile (battery) and now data centres (electricity cost). Apple M1 proved ARM can beat x86 outright.
+
+**"What is IPC?"**
+Instructions Per Cycle — how many instructions a CPU completes per clock cycle. A better measure of real performance than GHz alone. Modern superscalar CPUs achieve IPC > 4.

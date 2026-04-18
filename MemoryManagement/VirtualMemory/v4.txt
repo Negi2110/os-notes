@@ -1,0 +1,243 @@
+# Swap & Limitations of Virtual Memory — Master Notes
+
+---
+
+## 1. The Problem — Not Enough Physical RAM
+
+```
+Physical RAM is finite (e.g. 16GB).
+Too many processes → RAM fills up → new processes can't start.
+
+Without swap:   RAM full = system refuses new processes.
+With swap:      RAM full = OS moves cold pages to disk, frees RAM.
+                           New process gets that freed physical memory.
+                           Old pages come back from disk when needed.
+```
+
+---
+
+## 2. Swap — Step by Step Story
+
+### Step 1 — RAM is full, some pages are cold
+
+```
+Processes A, B, C all loaded.
+C's pages P3, P4, P5 haven't been accessed in a while (cold).
+
+Physical RAM:              SSD (swap):
+┌──────────┐               ┌──────────┐
+│  A.P4    │               │  C.P5    │ ← evicted to disk
+│  A.P3    │               │  C.P4    │ ← evicted to disk
+│  A.P2    │               │  C.P3    │ ← evicted to disk
+│  B.P3    │               └──────────┘
+│  B.P2    │
+│  A.P1    │
+│  C.P5    │ ← about to be evicted
+│  C.P4    │ ← about to be evicted
+│  C.P3    │ ← about to be evicted
+│  B.P1    │
+│  C.P2    │
+│  C.P1    │
+└──────────┘
+
+OS keeps the PAGE TABLE ENTRIES for C's pages intact.
+Entry just says: "this page is on disk, not in RAM"
+Page table stores the SWAP FILE INDEX so OS knows where on disk it lives.
+```
+
+### Step 2 — Process C accesses an evicted page (C.P4)
+
+```
+C tries to read an address inside C.P4.
+
+MMU looks up page table → C.P4 entry says "on disk" → PAGE FAULT.
+
+OS handles the page fault:
+  1. Find C.P4 on the SSD swap file (index stored in page table)
+  2. Need a free physical page → evict another cold page if needed
+  3. Load C.P4 from SSD → physical RAM
+  4. Update page table: C.P4 → new physical address
+     (address may be DIFFERENT from before — that's fine)
+  5. Resume process C — it never knew anything happened
+
+Physical RAM after:        SSD (swap):
+┌──────────┐               ┌──────────┐
+│  A.P4    │               │  C.P5    │
+│  A.P3    │               │  C.P4    │ ← now loaded back
+│  A.P2    │               │  C.P3    │
+│  B.P3    │               └──────────┘
+│  B.P2    │
+│  A.P1    │
+│  B.P1    │
+│  C.P2    │
+│  C.P1    │
+│  C.P4    │ ← back in RAM (at a new physical address)
+└──────────┘
+
+Note: page table entry for C.P4 updated to new physical address.
+      The swap file index is cleared from that entry.
+      Process C sees no difference — same virtual address works.
+```
+
+---
+
+## 3. Swap Cost
+
+```
+RAM access    =  50–100 ns
+SSD access    =  50–100 µs   → ~1,000× slower than RAM
+HDD access    =  5–10 ms     → ~100,000× slower than RAM
+
+One page fault to SSD = cost of ~1,000 RAM accesses.
+
+Thrashing:
+  If working set > physical RAM →
+  OS constantly evicts and reloads pages →
+  CPU spends all time handling page faults →
+  No real work gets done →
+  System appears frozen.
+
+Fix for thrashing:
+  Add more RAM
+  Kill memory-hungry processes
+  Reduce number of running processes
+  Use huge pages to reduce TLB pressure
+```
+
+---
+
+## 4. Page Table Entry — What It Actually Stores
+
+```
+Each entry in the page table contains:
+
+  ┌────────────────────────────────────────────────┐
+  │ Physical page number  (if page is in RAM)      │
+  │ OR swap file index    (if page is on disk)     │
+  │ Present bit           (1=in RAM, 0=on disk)    │
+  │ Dirty bit             (1=modified, needs write)│
+  │ Accessed bit          (for LRU eviction policy)│
+  │ Permission bits       (read/write/execute)     │
+  └────────────────────────────────────────────────┘
+
+Present bit = 0 → MMU triggers page fault → OS loads from swap.
+Dirty bit = 1   → page was modified → must write to disk on eviction.
+Dirty bit = 0   → page is clean → can evict without writing (already on disk).
+```
+
+---
+
+## 5. Limitations of Virtual Memory
+
+```
+1. Extra translation layer on every memory access
+   CPU cannot use virtual addresses directly.
+   Every access requires virtual → physical translation.
+   Without TLB: every access = 2 RAM reads (page table + actual data).
+
+2. Page table maintenance overhead
+   Each process has its own page table stored in RAM.
+   Many processes = significant RAM used just for bookkeeping.
+   Page tables themselves must be kept consistent.
+
+3. Page faults are expensive
+   Every swap-in = disk access = µs to ms of latency.
+   Kernel mode switch required on every page fault.
+   (User mode → kernel → handle fault → back to user mode)
+
+4. More complex CPU hardware required
+   MMU needed for address translation.
+   TLB needed to cache translations (without it, unusably slow).
+   TLB must be flushed on context switch → cold TLB = many misses.
+
+5. TLB cache misses hurt performance
+   Real example: MySQL 8.x vs 5.x
+   Larger memory footprint → more TLB pressure → more page table walks
+   → measurable performance regression even with same RAM.
+
+6. Internal fragmentation
+   Last page of every allocation is partially empty.
+   Up to (page size − 1) = 4095 bytes wasted per allocation.
+
+7. Swap latency unpredictability
+   Program runs fine until a swap-in happens → sudden spike in latency.
+   Real-time systems cannot tolerate this → they lock pages in RAM (mlock).
+```
+
+---
+
+## 6. Context Switch and TLB
+
+```
+When OS switches from Process A to Process B:
+
+  1. Save A's registers → load B's registers
+  2. Switch PTBR to point to B's page table
+  3. FLUSH the TLB (A's translations are now wrong for B)
+  4. B starts running with a COLD TLB
+  5. First N memory accesses → TLB misses → page table walks → slow
+  6. TLB warms up as B accesses its working set
+
+This is why context switches are expensive beyond just register saving.
+Heavy multitasking → frequent TLB flushes → poor cache utilisation.
+
+Mitigation — ASID (Address Space ID):
+  Tag TLB entries with process ID.
+  No flush needed on switch — entries from different processes coexist.
+  Used in ARM. x86 has PCID (Process Context Identifier) since Westmere.
+```
+
+---
+
+## 7. mlock — Preventing Swap
+
+```
+Some programs cannot tolerate swap latency:
+  Real-time audio/video
+  Database buffer pools (PostgreSQL, Redis)
+  Cryptographic key storage (must not touch disk)
+
+mlock() system call:
+  Locks specific pages in physical RAM.
+  OS guaranteed never to swap them out.
+  Page fault for those pages = impossible.
+
+mlockall():
+  Locks ALL pages of a process.
+  Used by latency-sensitive daemons.
+```
+
+---
+
+## 8. Summary Table
+
+```
+Feature               Works?   Cost
+──────────────────────────────────────────────────────────
+Fragmentation fix     YES      Internal fragmentation trade-off
+Isolation             YES      TLB flush on context switch
+Shared libraries      YES      Page table bookkeeping
+Programs > RAM        YES      Swap latency (1000× RAM speed)
+Extra translation     COST     Mitigated by TLB (>99% hit rate)
+Page fault handling   COST     Kernel mode switch per fault
+TLB misses            COST     Full page table walk in RAM
+```
+
+---
+
+## 9. One-Line Interview Answers
+
+**"What happens when RAM is full?"**
+OS picks cold pages using LRU, writes dirty ones to swap on disk, frees the physical pages, and updates page table entries to record the swap location — new allocations use the freed pages.
+
+**"What is a dirty page?"**
+A page whose content has been modified since it was loaded from disk — it must be written back to swap before being evicted, unlike a clean page which can simply be discarded.
+
+**"Why is TLB flushed on context switch?"**
+The TLB holds virtual→physical translations for the current process. When switching processes those translations are wrong for the new process, so they must be invalidated — unless ASID/PCID tagging is used.
+
+**"What are the main costs of virtual memory?"**
+Translation overhead (mitigated by TLB), page table RAM overhead, page fault latency on swap access, TLB flush on context switch, and internal fragmentation from fixed page sizes.
+
+**"What is thrashing?"**
+When the combined working set of all processes exceeds physical RAM, causing the OS to spend more time moving pages between RAM and disk than executing actual instructions.

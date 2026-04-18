@@ -1,0 +1,285 @@
+# Virtual Memory — Paging, Page Tables, Shared Memory, Isolation, Swap — Master Notes
+
+---
+
+## 1. Paging — How Virtual Memory Solves Fragmentation
+
+```
+Rule: divide ALL memory into fixed-size blocks called PAGES (usually 4KB)
+
+Each process gets its own VIRTUAL address space:
+  Process A VM:  P1, P2, P3, P4   (virtual pages 0–3)
+  Process B VM:  P1, P2, P3       (virtual pages 0–2)
+  Process C VM:  P1, P2, P3, P4, P5
+
+These virtual pages map to PHYSICAL pages anywhere in RAM:
+
+  Virtual (Process A)      Physical RAM
+  ┌──────────┐             ┌──────────┐ 48,000
+  │  A.P4    │ ──────────→ │  A.P4    │
+  ├──────────┤             ├──────────┤ 44,000
+  │  A.P3    │ ──────────→ │  A.P3    │
+  ├──────────┤             ├──────────┤ 40,000
+  │  A.P2    │ ──────────→ │  A.P2    │
+  ├──────────┤             ├──────────┤ 36,000
+  │  A.P1    │ ──────────→ │  B.P3    │ ← different process, interleaved
+  └──────────┘             ├──────────┤
+                           │  B.P2    │
+  Virtual (Process B)      ├──────────┤
+  ┌──────────┐             │  A.P1    │ ← A's page 1 is here physically
+  │  B.P3    │ ──────────→ ├──────────┤
+  │  B.P2    │ ──────────→ │  C.P5    │
+  │  B.P1    │ ──────────→ │  C.P4    │
+  └──────────┘             │  ...     │
+                           └──────────┘
+
+Key insight:
+  Processes see contiguous virtual space.
+  Physical pages are scattered — that is fine.
+  External fragmentation gone — any free page fills any request.
+```
+
+---
+
+## 2. Page Tables
+
+```
+Problem: how does MMU know which physical page a virtual page maps to?
+Answer:  the PAGE TABLE — one per process, stored in RAM.
+
+Structure of a page table entry:
+  VMA (Virtual Memory Address) → PA (Physical Address)
+
+Example — Process A page table:
+  VMA     PA
+  0       28,000
+  4,000   40,000
+  8,000   44,000
+  12,000  48,000  (4KB pages, so each entry is 4000 bytes apart)
+
+Example — Process B page table:
+  VMA     PA
+  8,000   12,000
+  12,000  32,000
+  16,000  36,000
+
+Each process has its OWN page table.
+Page table itself is stored in RAM.
+CPU stores pointer to current process page table in PTBR
+(Page Table Base Register).
+
+On every memory access:
+  1. MMU reads PTBR → finds page table in RAM
+  2. Looks up virtual page → gets physical page
+  3. Accesses physical RAM
+  (TLB caches this so step 1+2 are usually skipped)
+```
+
+---
+
+## 3. Shared Memory
+
+```
+Problem without virtual memory:
+  5 processes running the same program (e.g. nginx workers).
+  Each gets its own FULL COPY of the code in RAM.
+  5 × 10MB = 50MB wasted on identical code.
+
+  Physical RAM:
+  ┌─────────────────┐
+  │ Process 5 Code  │
+  │ Process 4 Code  │  ← all identical, all duplicated
+  │ Process 3 Code  │
+  │ Process 2 Code  │
+  │ Process 1 Code  │
+  └─────────────────┘
+
+Solution with virtual memory:
+  Load code ONCE into physical RAM.
+  Map ALL processes' virtual pages to the SAME physical page.
+
+  Process A VM          Physical RAM
+  ┌──────────┐          ┌──────────┐
+  │  A.P4    │ ───────→ │  A.P4    │ (unique data)
+  │  A.P3    │ ───────→ │  A.P3    │ (unique data)
+  │  A.P2    │ ──┐      │  SHARED  │ ← one physical copy
+  └──────────┘   │      └──────────┘
+                 │           ↑
+  Process B VM   │           │
+  ┌──────────┐   │           │
+  │  B.P2    │ ──┘           │ both A.P2 and B.P2 point here
+  │  B.P1    │ ──────────────┘
+  └──────────┘
+
+Result: 1 physical copy serves N processes. Huge RAM saving.
+```
+
+---
+
+## 4. Shared Libraries
+
+```
+Most processes use the same libraries (libc, libpthread, etc.)
+
+Without VM:  each process loads its own copy → massive duplication
+With VM:     OS loads library ONCE into physical RAM
+             maps each process's virtual page → same physical page
+
+To inspect on Linux:
+  cat /proc/[pid]/maps
+  Shows every virtual mapping for a process
+  You'll see libc mapped at same physical address across processes
+
+Common shared memory use cases:
+  Multi-process / multi-threading   → share data between workers
+  Database shared buffers           → PostgreSQL shared_buffers
+  NGINX / proxies                   → shared cache between workers
+  Forking                           → parent+child share pages (CoW)
+  Copy on Write (CoW)               → see below
+```
+
+**Copy on Write (CoW):**
+```
+On fork():
+  Child does NOT get a copy of parent's memory immediately.
+  Both parent and child point to the SAME physical pages.
+  Pages are marked READ-ONLY.
+
+  If either process WRITES to a page:
+    Page fault triggered
+    OS makes a private copy of that page for the writer
+    That process now has its own physical copy
+    Other process still uses original
+
+Result:
+  Fork is nearly instant (no copying).
+  Only pages that actually differ get duplicated.
+  Shared read-only pages stay shared forever.
+```
+
+---
+
+## 5. Isolation
+
+```
+Problem without virtual memory:
+  All processes share one physical address space.
+  Process A can read/write address 1000 → that's Process B's memory.
+  Bug or malicious code in A can corrupt or spy on B.
+  One crash can kill everything including the OS.
+
+Solution with virtual memory:
+  Each process has its OWN virtual address space.
+  Virtual address 1000 in Process A ≠ virtual address 1000 in Process B.
+  They map to DIFFERENT physical addresses.
+
+  Process A VM:   address 1000 → physical 28,000
+  Process B VM:   address 1000 → physical 52,000
+  Same virtual address, completely different physical location.
+
+  Process A has NO WAY to form an address that reaches B's physical pages.
+  The page table simply has no entry for B's physical pages.
+  MMU enforces this in hardware — not bypassable from user space.
+
+  Most of the virtual address space is UNMAPPED.
+  Accessing an unmapped virtual address → segfault (OS kills the process).
+  The process cannot reach memory it doesn't own.
+```
+
+```
+Visual:
+  Process A VM    Process B VM    Process C VM
+  ┌──────────┐    ┌──────────┐    ┌──────────┐
+  │  0–10000 │    │  0–10000 │    │  0–10000 │
+  └──────────┘    └──────────┘    └──────────┘
+       ↓                ↓               ↓
+  physical 28k     physical 52k    physical 4k
+  (completely separate — no overlap possible)
+```
+
+---
+
+## 6. Swap — Running Programs Larger Than RAM
+
+```
+Problem:
+  Physical RAM has a limit (e.g. 16GB).
+  Too many processes → RAM is full → can't start new ones.
+
+Solution — swap space (on SSD/HDD):
+  When RAM is full, OS picks a page that hasn't been used recently.
+  Writes it to disk (swap partition or swap file).
+  Frees that physical page for the new process.
+  Updates page table: marks that virtual page as "on disk".
+
+  When the process needs that page again:
+    Page fault triggered (page not in RAM)
+    OS reads page back from disk into RAM
+    May need to evict another page first
+    Process resumes transparently
+
+  Physical RAM          SSD (swap)
+  ┌──────────┐          ┌──────────┐
+  │  A.P4    │          │  C.P5    │ ← offloaded to disk
+  │  A.P3    │          │  C.P4    │
+  │  B.P3    │          │  C.P3    │
+  │  B.P2    │          └──────────┘
+  │  A.P1    │
+  │  ...     │
+  └──────────┘
+
+Cost of swap:
+  RAM access  = 50–100 ns
+  SSD access  = 50–100 µs  (1000× slower)
+  HDD access  = 5–10 ms    (100,000× slower)
+
+Thrashing:
+  If system is constantly swapping in/out → CPU does no real work
+  System feels completely frozen
+  Fix: add more RAM, kill processes, reduce working set
+```
+
+---
+
+## 7. Full Picture — Everything Together
+
+```
+Virtual address space per process:
+  ┌────────────────────────────────────────────┐
+  │  Stack      ← grows down, local variables  │
+  │  ...                                       │
+  │  Heap       ← grows up, malloc/new         │
+  │  ...                                       │
+  │  BSS        ← uninitialised globals        │
+  │  Data       ← initialised globals          │
+  │  Code/Text  ← program instructions (shared)│
+  └────────────────────────────────────────────┘
+
+Each section → pages → mapped to physical RAM or swap by page table.
+Code pages    → shared with other processes running same program.
+Data/Stack    → private, CoW on fork.
+Heap pages    → private, allocated on demand.
+Unmapped gaps → segfault if accessed.
+```
+
+---
+
+## 8. One-Line Interview Answers
+
+**"What is a page table?"**
+A per-process map stored in RAM that translates virtual page numbers to physical page numbers; the MMU reads it on every memory access (TLB caches recent entries).
+
+**"What is shared memory in the context of virtual memory?"**
+Multiple processes' virtual pages mapped to the same physical page — used for shared libraries, IPC, and forked processes before CoW triggers.
+
+**"What is Copy on Write?"**
+After fork, parent and child share the same physical pages marked read-only. On the first write by either process, the OS copies only that page and gives the writer its own private copy.
+
+**"How does virtual memory provide isolation?"**
+Each process has its own page table. Virtual address X in process A maps to a different physical address than virtual address X in process B. The MMU makes it impossible for a process to address memory outside its own page table entries.
+
+**"What is swap?"**
+When RAM is full, the OS writes least-recently-used pages to disk, frees the physical pages, and reloads them on page fault. Allows running more processes than fit in RAM at 1000× the latency cost.
+
+**"What is thrashing?"**
+When the system spends more time swapping pages in and out of disk than doing actual computation — caused by the working set being larger than available RAM.

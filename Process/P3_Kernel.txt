@@ -1,0 +1,58 @@
+This final piece of the puzzle—the **Kernel Process Table**—is what ties everything together. While your previous diagrams showed individual processes, this one shows how the **Operating System (The Kernel)** manages *all* of them at once.
+
+Think of the Process Table as the **"Global Directory"** of the entire operating system.
+
+---
+
+## **1. The Hierarchy: Table → PCB → Memory**
+To visualize this for an interview, follow the chain of command shown in your image:
+1.  **Process Table:** A master list in Kernel Space.
+2.  **PCB:** The specific record for one process.
+3.  **Address Space:** The actual memory (Stack, Heap, Code) belonging to that process.
+
+---
+
+## **2. Breakdown of the "Kernel Process Table"**
+
+### **The Table Itself**
+* **What it is:** A data structure (usually an array or a linked list) stored in **Kernel Space**.
+* **The Mapping:** It maps a **PID** (Process ID) to a **PCB Address** (a pointer in memory).
+    * *Example from your image:* PID `100` points to memory address `0x222222`, which is where **PCB 100** lives.
+* **Purpose:** It allows the Kernel to perform a **quick lookup**. If the Kernel needs to kill a process or change its priority, it searches the table for the PID to find the correct PCB.
+
+
+### **The PCB (The Bridge)**
+Your diagram shows two processes (PID 100 and PID 200). Notice how their PCBs contain different data:
+* **Process 100:** Is "Running" and has its own Program Counter (PC) and memory pointers.
+* **Process 200:** Is "Stopped" (likely waiting for its turn or an I/O event). Its state is saved in the PCB so it can be resumed later.
+
+### **The Connection to User Space**
+Notice the blue arrows pointing from the PCBs to the Stack/Heap/Code blocks. 
+* The PCB doesn't *contain* the process's code; it **points** to where that code starts in RAM. 
+* This proves that every process lives in its own "isolated island," and only the Kernel (via the Process Table) has the map to all the islands.
+
+---
+
+## **3. Key Interview Notes: Scaling & Limitations**
+
+### **Maximum Processes**
+Interviewers might ask: *"Why is there a limit to how many programs I can open?"*
+* **Answer:** Because the Process Table has a finite size (often defined by `PID_MAX`). Every process requires a PCB, and every PCB consumes Kernel memory. If the table is full, the OS cannot `fork()` a new process.
+
+### **Security & Isolation**
+* **Concept:** A user-level process (like PID 100) cannot see or touch the Process Table. It only exists in **Kernel Space**.
+* **Importance:** This prevents one program from "looking over the shoulder" of another program or interfering with the OS's management.
+
+---
+
+## **4. The "Full Picture" Summary for your Notes**
+
+> "The **Kernel Process Table** is a centralized directory in Kernel memory that maps every unique **PID** to its corresponding **PCB**. When the OS performs a **Context Switch**, it looks up the next process in this table, accesses its PCB to retrieve the saved CPU registers (**PC, LR**), and jumps to the memory address where that process's **Text/Code** segment resides. This structure ensures that the Kernel can manage multiple isolated processes efficiently and securely."
+
+### **Visualization Checklist for your Mind:**
+* [ ] **Process Table:** The Spreadsheet.
+* [ ] **PID:** The Row Number.
+* [ ] **PCB:** The File Folder in that row.
+* [ ] **Stack/Heap/Code:** The actual work being done on the desk.
+
+

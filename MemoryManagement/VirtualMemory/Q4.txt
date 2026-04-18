@@ -1,0 +1,163 @@
+## Segmentation — Master Notes
+
+---
+
+### The Core Idea
+
+```
+Before paging, the OS divided memory into logical SEGMENTS.
+Each segment = one logical unit of a program.
+
+Instead of one flat address space,
+a program is split into meaningful chunks:
+
+  Code segment      → program instructions  (read only)
+  Stack segment     → local variables, function calls
+  Heap segment      → dynamic allocations
+  Data segment      → global variables
+
+Each segment has:
+  Base address   → where it starts in physical RAM
+  Limit          → how big it is
+  Permissions    → read / write / execute
+```
+
+---
+
+### How It Works
+
+```
+CPU generates address as:  SEGMENT + OFFSET
+
+  Segment selector → which segment (code/stack/heap/data)
+  Offset           → how far into that segment
+
+Hardware checks:
+  1. Is offset < limit?     (within bounds?)
+  2. Is access permitted?   (reading code? writing stack?)
+  3. Base + offset          → physical address
+
+  Segment table (per process):
+  ┌─────────┬──────────┬────────┬─────────────┐
+  │ Segment │   Base   │ Limit  │ Permissions │
+  ├─────────┼──────────┼────────┼─────────────┤
+  │  Code   │ 400,000  │ 50,000 │ Read+Execute│
+  │  Stack  │ 700,000  │ 20,000 │ Read+Write  │
+  │  Heap   │ 500,000  │ 80,000 │ Read+Write  │
+  │  Data   │ 450,000  │ 10,000 │ Read+Write  │
+  └─────────┴──────────┴────────┴─────────────┘
+
+Access: Code segment, offset 100
+  → physical address = 400,000 + 100 = 400,100 ✓
+
+Access: Code segment, offset 60,000
+  → 60,000 > limit 50,000 → SEGFAULT ✓
+```
+
+---
+
+### What Segmentation Solved
+
+```
+1. Isolation
+   Each process has its own segment table.
+   Can't access outside your own segments.
+   Offset beyond limit → hardware kills the access instantly.
+
+2. Permissions per region
+   Code → execute only, can't write (prevents self-modifying attacks)
+   Stack → read/write, can't execute (prevents stack overflow exploits)
+   This is still used today (NX bit / DEP)
+
+3. Logical organisation
+   Memory reflects the structure of the program.
+   Makes sense to humans and compilers.
+```
+
+---
+
+### What Segmentation DIDN'T Solve — The Fatal Flaw
+
+```
+External fragmentation — still completely broken.
+
+Segments are variable size (just like old physical allocation).
+Heap grows → needs more space → maybe no contiguous block available.
+
+  RAM:
+  [Code A][Stack A][  FREE  ][Code B][Heap B][  FREE  ]
+
+  Heap A needs to grow 50MB.
+  Left free block = 30MB.
+  Right free block = 40MB.
+  Total = 70MB free. Neither block is big enough.
+  Heap A is stuck. Same old fragmentation problem.
+
+Segmentation solved ISOLATION but not FRAGMENTATION.
+This is why paging replaced it.
+```
+
+---
+
+### Segmentation vs Paging
+
+```
+Property           Segmentation        Paging
+───────────────────────────────────────────────────────
+Unit size          Variable            Fixed (4KB)
+Fragmentation      External (bad)      Internal (small, acceptable)
+Logical structure  Yes (code/heap etc) No (all pages look the same)
+Isolation          Yes                 Yes
+Permissions        Per segment         Per page
+Hardware           Segment table       Page table + MMU
+Still used?        Partially (x86)     Yes — dominant model
+```
+
+---
+
+### Segfault — Where the Name Comes From
+
+```
+SEGMENTATION FAULT = you accessed outside your segment's limit.
+
+Even though modern systems use paging not segmentation,
+the name stuck because the same concept applies:
+  → accessing memory you don't own → OS kills you → segfault.
+
+On Linux today a segfault means:
+  You accessed a virtual address with no valid page table entry.
+  OR you violated page permissions (writing to read-only page).
+  Same idea, paging implementation.
+```
+
+---
+
+### x86 Still Has Segmentation (mostly disabled)
+
+```
+x86 hardware has full segmentation support (CS, DS, SS, ES registers).
+In 64-bit mode (modern):
+  OS sets all segment bases to 0.
+  All segments span the full address space.
+  Segmentation is effectively a no-op.
+  Only FS and GS segments still used
+  (for thread-local storage — one per thread).
+
+So segmentation exists in hardware but paging does all the real work.
+```
+
+---
+
+### One-Line Interview Answers
+
+**"What is segmentation?"**
+A memory model where each program is divided into logical variable-size segments (code, stack, heap, data), each with its own base address, size limit, and permissions — the hardware enforces access within bounds.
+
+**"What is a segfault?"**
+Originally: accessing memory outside your segment's limit. Today: accessing an unmapped virtual address or violating page permissions — OS sends SIGSEGV and kills the process.
+
+**"Why did paging replace segmentation?"**
+Segmentation still caused external fragmentation — variable-size segments leave unpredictable holes in RAM. Fixed-size pages eliminate external fragmentation entirely by fitting into any free slot.
+
+**"What did segmentation get right?"**
+Per-region permissions — code is execute-only, stack is read/write but not executable. This idea survived into paging as the NX (no-execute) bit, still used today to prevent code injection attacks.

@@ -1,0 +1,92 @@
+This is the "Black Belt" level of memory management. In a C++ interview, being able to walk through these slides from **First Principles** proves you aren't just writing code—you understand how the silicon manages your logic.
+
+---
+
+## **Slide 1: The Stack (The "Last-In, First-Out" Scaffolding)**
+
+### **The First Principle: Automatic Lifetime**
+The Stack exists to solve one problem: **How do we handle memory for functions that call other functions?**
+* **The "LIFO" Logic:** Since `function1` calls `function2`, `function2` *must* finish before `function1` can. Therefore, the memory for `function2` should be on top of `function1`.
+* **High to Low:** In most architectures (x86), the stack grows **downward**. This is a historical design choice to keep the Stack and Heap as far apart as possible to prevent them from crashing into each other.
+* **The Hidden Detail:** "Stack space is limited" is a literal truth. The OS assigns a fixed size (often 8MB) to the stack when the process starts. If you have deep recursion, you hit the "Stack Overflow"—there is no more virtual memory mapped for that downward growth.
+
+---
+
+## **Slide 2: Stack Pointer (SP) - The "Current Frontier"**
+
+### **The First Principle: The CPU's Bookmark**
+The **SP** is a hardware register. It is the CPU's way of knowing exactly where the "empty space" starts.
+* **Allocation is just Math:** When you see `int c` being allocated in the diagram, the CPU isn't doing complex searches. It literally just subtracts 4 from the SP.
+    * `SP = SP - 4`
+* **Deallocation is "Instant":** To "delete" `int c`, the CPU just moves the SP back up. The data is still there in the "dirt" (RAM), but the CPU now considers that space "free." This is why uninitialized variables in C++ contain "garbage" values—they are leftovers from the previous function's stack.
+
+---
+
+## **Slide 3: Base Pointer (BP) - The "Anchor"**
+
+### **The First Principle: Relative Addressing**
+The **SP** is too "jumpy." As you push parameters and local variables, the SP changes every few lines of code. If you tried to find `int a` using the SP, the math would change constantly.
+* **The Frame Pointer:** The **BP** stays fixed at the start of the function call.
+* **The Math:** The compiler converts your variable names into "Offsets." 
+    * `int a` becomes `[BP - 4]`
+    * `int b` becomes `[BP - 8]`
+* **Interview Insight:** When you look at Assembly and see `[rbp - 0x8]`, you are seeing the Base Pointer being used to find a local variable.
+
+
+
+---
+
+## **Slide 4 & 5: Nested Calls (The Save-and-Restore Problem)**
+
+### **The First Principle: Context Preservation**
+When `main` calls `func1`, the CPU has one set of BP/SP registers but two functions to manage. It must **save the caller's state**.
+* **The "Losing the BP" Problem:** Slide 5 highlights the danger—if `func1` just takes over the BP, `main`’s frame is "lost." 
+* **The Hidden Detail:** This is why every C++ function begins with a "Prologue":
+    1.  `push bp` (Save the old anchor on the stack)
+    2.  `mov bp, sp` (Make the current top the new anchor)
+
+---
+
+## **Slide 6 & 7: Previous BP (The Breadcrumb Trail)**
+
+### **The First Principle: The Linked List of Frames**
+By saving the "Old BP" on the stack, you are creating a **linked list of memory frames**.
+* **Chain of Command:** `func1`'s stack frame contains a pointer to `main`'s frame. `main`'s frame contains a pointer to the OS's start frame.
+* **The Hidden Detail:** This is how **Debuggers** show you a "Call Stack." They follow the chain of "Old BPs" to see exactly which functions called which.
+
+
+
+---
+
+## **Slide 8 & 9: Function Return (The Cleanup)**
+
+### **The First Principle: Total Restoration**
+When `func1` returns, we must revert the CPU registers to exactly how they were in `main`.
+* **`sp = sp + 12`**: This is the "Deallocation." We don't wipe the memory; we just move the pointer.
+* **Restoring BP:** The CPU "pops" that saved "Old BP" back into the BP register. Suddenly, the CPU's "Anchor" is back in `main`'s territory.
+
+---
+
+## **Slide 10: The Return Address (The GPS)**
+
+### **The First Principle: Instructional Continuity**
+The Stack doesn't just store data; it stores **Control Flow**.
+* **The Link Register (LR) vs. Stack:** In some CPUs (ARM), the return address is kept in a register (LR) for speed. In x86, it's pushed onto the stack.
+* **The PC Connection:** When the function ends, the CPU takes that "Return Address" and shoves it into the **Program Counter (PC)**. 
+* **The Ultimate Hidden Detail (Security):** This is the target of **Stack Smashing** attacks. If a hacker can overflow a local variable and overwrite the "Return Address," they can make the PC jump to their own malicious code instead of going back to `main`.
+
+---
+
+## **Summary for Interview Note-taking**
+
+| Term | First Principle | Interview "So What?" |
+| :--- | :--- | :--- |
+| **Stack** | LIFO Order | Explains recursion and "Stack Overflow." |
+| **SP** | Moving Frontier | High performance (allocation is just 1 CPU cycle). |
+| **BP** | Fixed Anchor | Allows stable access to local variables via offsets. |
+| **Prologue** | State Saving | Every function must save the caller's BP. |
+| **Epilogue** | State Restoration | Restores SP/BP and jumps PC to the Return Address. |
+
+
+
+**Can you see now how the Stack is actually a sophisticated "Time Machine" that allows the CPU to jump into a new function and then perfectly "undo" everything to return home?**

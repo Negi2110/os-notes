@@ -1,0 +1,47 @@
+This final snapshot covers the two most dangerous "bugs" in C++ development: **Memory Leaks** and **Dangling Pointers**. Both occur because of the disconnect between the **Stack** (where the "slip of paper" lives) and the **Heap** (where the actual object lives).
+
+To understand these without looking at the diagram, think of it as a **Lost Key** vs. a **Broken Lock**.
+
+---
+
+## **1. Memory Leaks: The "Lost Key" Problem**
+A memory leak happens when you have an object in the Heap warehouse, but you **lose the pointer** to it before you can free it.
+
+* **The Scenario:** You create an object in the Heap and write its address on a "slip of paper" (pointer) on your desk (Stack).
+* **The Crash:** Your function ends. As we learned, the Stack is shredded instantly. That slip of paper with the address is destroyed.
+* **The Result:** The object is still sitting in the Heap warehouse, taking up space, but you no longer know its bin number. You can never go back and `free` it. The memory is "leaked" until the entire process is killed by the OS.
+* **Interview Gold:** This is why we use **RAII** (Resource Allocation Is Initialization) in C++. We wrap the pointer in a class (like `std::unique_ptr`) so that when the class is shredded on the stack, its destructor automatically calls `free` for us.
+
+
+---
+
+## **2. Dangling Pointers: The "Broken Lock" Problem**
+A dangling pointer is the opposite: you have the "slip of paper" (address), but the object it points to has already been destroyed or given to someone else.
+
+* **The Scenario:** You have two pointers (`a` and `b`) pointing to the same bin in the Heap.
+* **The Mistake:** `fun2` calls `free(b)`. The warehouse manager marks that bin as "empty."
+* **The Danger:** `fun1` still has its pointer `a`. It doesn't know the bin was emptied. When `fun1` tries to read `*a`, it’s looking at "garbage" or memory that now belongs to a different function.
+* **The Consequence:** This leads to **Segmentation Faults** or, even worse, "silent" data corruption where your program keeps running but produces wrong results.
+
+
+---
+
+## **3. Summary Comparison for your Notes**
+
+| Issue | What happened? | Analogy |
+| :--- | :--- | :--- |
+| **Memory Leak** | Pointer is destroyed, but Heap memory stays allocated. | You left your luggage in a locker but threw away the key. |
+| **Dangling Pointer** | Heap memory is freed, but the Pointer still exists. | you have the key to a locker that has been emptied and reassigned. |
+
+### **The "Senior" Solutions (Reference Counting & GC)**
+The snapshot mentions two ways to solve this:
+1.  **Reference Counting:** This is what `std::shared_ptr` does. It counts how many "slips of paper" point to the same bin. It only calls `free` when the very last paper is destroyed.
+2.  **Garbage Collection:** Found in languages like Java or Python. A background "janitor" process scans the warehouse to see if any bins have no slips of paper pointing to them, and if so, it empties them automatically.
+
+---
+
+## **4. Interview "Mic Drop" Answer**
+If asked how to avoid these, say:
+> "Memory leaks and dangling pointers are avoided in modern C++ by moving away from raw pointers and manual memory management. By using **Smart Pointers**, we tie the lifetime of a heap resource to the scope of a stack variable. This ensures that memory is automatically reclaimed via RAII, preventing leaks, and that we don't attempt to access invalidated memory, preventing dangling pointer errors."
+
+**You’ve now covered the entire roadmap of systems programming! You've gone from the instruction cycle to memory sections, and finally to the bugs that break them. Are you feeling ready to crush that interview?**

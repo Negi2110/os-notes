@@ -1,0 +1,220 @@
+# Fragmentation — Master Notes
+
+---
+
+## 0. The Core Problem
+
+```
+Physical memory is one big array of bytes.
+Processes need CONTIGUOUS blocks to load into.
+Over time, gaps appear between processes.
+Those gaps may be unusable even if their total size is large enough.
+This is fragmentation.
+```
+
+---
+
+## 1. Fragmentation — The Story
+
+```
+Start: RAM is empty (0 to 1,000,000)
+
+┌─────────────────────────┐  address 1,000,000
+│                         │
+│          FREE           │
+│                         │
+└─────────────────────────┘  address 0
+
+Step 1: Load Process 1, 2, 3
+┌─────────────────────────┐  1,000,000
+│       Process 3         │  800,000
+├─────────────────────────┤
+│                         │
+│       Process 2         │
+│                         │
+├─────────────────────────┤  10,000
+│       Process 1         │
+└─────────────────────────┘  0
+
+Step 2: Process 1 and 3 terminate
+┌─────────────────────────┐  1,000,000
+│      FREE (gap)         │  800,000
+├─────────────────────────┤
+│       Process 2         │
+├─────────────────────────┤  10,000
+│      FREE (gap)         │
+└─────────────────────────┘  0
+
+Step 3: Large Process 4 wants to load
+  Free space at top    = 200,000 bytes
+  Free space at bottom =  10,000 bytes
+  Total free           = 210,000 bytes
+  Process 4 needs      = 210,000 bytes
+
+  Result: CANNOT LOAD.
+  Total free is enough but no single contiguous block is big enough.
+  Process 4 is stuck waiting.
+
+┌─────────────────────────┐  1,000,000
+│      FREE (200k)        │              ←─┐
+├─────────────────────────┤  800,000       │  Process 4 needs
+│       Process 2         │               ├─ both gaps joined
+├─────────────────────────┤  10,000        │  but Process 2 is in the way
+│      FREE (10k)         │              ←─┘
+└─────────────────────────┘  0
+```
+
+---
+
+## 2. External Fragmentation
+
+```
+Definition:
+  Enough total free memory exists BUT
+  it is scattered in non-contiguous chunks
+  so a large allocation cannot be satisfied.
+
+Cause:
+  Variable-size allocations + deallocations over time
+  Leave holes of different sizes between live blocks
+
+Visual:
+  ┌───┐
+  │ R │  ← Process A (allocated)
+  ├───┤
+  │   │  ← gap (free)
+  ├───┤
+  │ G │  ← Process B (allocated)
+  ├───┤
+  │   │  ← gap (free)        Purple process needs one big block
+  ├───┤                       Total free = enough
+  │ Y │  ← Process C         But no single gap is big enough
+  └───┘                       → External fragmentation
+
+Happens with: variable-size blocks (segmentation)
+```
+
+---
+
+## 3. Internal Fragmentation
+
+```
+Definition:
+  Memory is allocated in fixed-size blocks.
+  Process doesn't use the full block.
+  The leftover space INSIDE the block is wasted.
+  OS doesn't know it's wasted — can't give it to anyone else.
+
+Cause:
+  Fixed block sizes don't perfectly match what a process needs.
+
+Visual:
+  Large block (e.g. 4KB page):    Small block (e.g. 512B):
+  ┌──────────────┐                ┌──────────────┐
+  │ USED (small) │                │ USED         │
+  ├──────────────┤                ├──────────────┤
+  │              │                │ USED         │
+  │  WASTED      │                ├──────────────┤
+  │  (internal)  │                │ USED (small) │
+  │              │                ├──────────────┤
+  └──────────────┘                │ WASTED(tiny) │
+                                  └──────────────┘
+
+  Large blocks → more waste per block
+  Small blocks → less waste per block, but more bookkeeping overhead
+
+Happens with: fixed-size block allocators, paging
+```
+
+---
+
+## 4. External vs Internal — Side by Side
+
+```
+Type        │ Where is waste?        │ Cause                  │ OS aware?
+────────────┼────────────────────────┼────────────────────────┼──────────
+External    │ Between allocations    │ Variable size + gaps   │ Yes
+Internal    │ Inside an allocation   │ Fixed block, partial   │ No
+```
+
+---
+
+## 5. How Virtual Memory (Paging) Solves Fragmentation
+
+```
+Key insight: stop requiring contiguous physical memory.
+
+Paging rules:
+  → Divide all memory into fixed-size blocks called PAGES (usually 4KB)
+  → Each process has a virtual address space (fake, contiguous)
+  → Virtual pages map to physical pages anywhere in RAM
+  → Mapping stored in the process's PAGE TABLE
+  → Many virtual pages → one physical page (shared libraries)
+
+Result:
+  Process thinks it has one big contiguous block (virtual).
+  Physical pages are scattered all over RAM — that's fine.
+  External fragmentation SOLVED — any free page can satisfy any request.
+
+  Virtual address space:        Physical RAM:
+  ┌──────────┐                  ┌──────────┐ page 0
+  │ page 0   │ ─────────────→  │ Process A│
+  ├──────────┤                  ├──────────┤ page 1
+  │ page 1   │ ──────────┐      │ Process B│
+  ├──────────┤            └───→ ├──────────┤ page 2
+  │ page 2   │ ───────────────→ │ Process A│
+  └──────────┘                  └──────────┘
+
+  Pages are non-contiguous physically but process never knows.
+```
+
+---
+
+## 6. Paging and Internal Fragmentation Trade-off
+
+```
+Paging solves external fragmentation.
+But introduces internal fragmentation:
+
+  Process needs 5KB.
+  Page size = 4KB.
+  OS allocates 2 pages = 8KB.
+  3KB wasted inside page 2.
+
+Trade-off:
+  Larger pages → more internal fragmentation, fewer TLB entries needed
+  Smaller pages → less internal fragmentation, more page table entries
+
+Common choice: 4KB (balance between the two)
+Some systems use huge pages: 2MB or 1GB for large datasets
+```
+
+---
+
+## 7. Summary
+
+```
+Problem               Cause                         Solution
+──────────────────────────────────────────────────────────────
+External fragmentation  Variable alloc + gaps         Paging (fixed blocks)
+Internal fragmentation  Fixed blocks, partial use     Smaller pages / slab alloc
+Program > RAM           Must fit entirely in RAM      Virtual memory + swap
+No isolation            Any process reads any addr    Page tables per process
+Shared libs duplicated  Each process loads own copy   Map same physical page
+```
+
+---
+
+## 8. One-Line Interview Answers
+
+**"What is external fragmentation?"**
+Free memory exists but is scattered in non-contiguous chunks — a large allocation fails even though total free space is sufficient.
+
+**"What is internal fragmentation?"**
+A fixed-size block is allocated but the process only uses part of it — the unused space inside the block is invisible to the OS and wasted.
+
+**"How does paging solve external fragmentation?"**
+By breaking memory into fixed equal-size pages, any free page can satisfy any request — physical pages need not be contiguous because the page table maps virtual pages to wherever physical pages happen to be.
+
+**"Does paging eliminate all fragmentation?"**
+No — it trades external fragmentation for internal fragmentation. The last page allocated to a process is rarely fully used, wasting up to (page size − 1) bytes.

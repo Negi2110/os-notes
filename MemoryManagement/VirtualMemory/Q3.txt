@@ -1,0 +1,140 @@
+## Shared Memory — The Core Insight
+
+---
+
+### The Problem It Solves
+
+```
+Without shared memory:
+  10 Chrome tabs open.
+  Each tab is a separate process.
+  Each process loads Chrome's code into RAM.
+  10 × 100MB = 1GB just for identical code copies.
+
+The code is IDENTICAL across all 10 processes.
+You're storing the same thing 10 times.
+That's just waste.
+```
+
+---
+
+### The Insight
+
+```
+Code never changes while running.
+Read-only data never changes while running.
+
+If something never changes →
+multiple processes can READ the same physical copy simultaneously →
+no conflict possible →
+no need for separate copies.
+
+Virtual memory makes this free:
+  Process A's virtual page 5 → physical page 200
+  Process B's virtual page 5 → physical page 200  ← same!
+  Process C's virtual page 5 → physical page 200  ← same!
+
+One physical copy. N virtual pointers to it.
+RAM usage = 100MB regardless of how many tabs open.
+```
+
+---
+
+### What It Actually Solves
+
+```
+1. Duplicate code         → one copy of libc, Chrome, any shared library
+2. IPC (inter-process)    → two processes share a page to pass data
+                            faster than pipe/socket (no kernel copy needed)
+3. Fork efficiency        → child starts sharing parent's pages instantly
+                            copy only happens IF something is written (CoW)
+4. Database buffer pool   → all worker processes read same cached data
+```
+
+---
+
+### The One Insight to Remember
+
+```
+Shared memory is just two virtual addresses
+pointing to the same physical page.
+
+That's it.
+The MMU makes it invisible to both processes.
+Neither process knows or cares the other exists.
+```
+
+
+## Shared Memory — Interview Examples
+
+---
+
+### 1. Chrome Tabs (best opening example)
+
+```
+"Open 20 Chrome tabs. Each tab is a separate process.
+Chrome's binary code is ~100MB.
+
+Without shared memory: 20 × 100MB = 2GB just for code.
+With shared memory:    1 × 100MB, all 20 tabs point to same physical pages.
+
+The code is read-only so no process can corrupt another.
+OS just maps the same physical pages into every tab's virtual space."
+```
+
+---
+
+### 2. Fork + Copy on Write (most technical, impressive)
+
+```
+"When a web server like nginx forks worker processes,
+the child initially shares ALL of the parent's physical pages.
+No copying happens at fork time — it's instant.
+
+If the child writes to a page → only THEN does the OS
+make a private copy of that one page for the child.
+Pages that are only read → shared forever, never copied.
+
+A server with 10 workers and 500MB of read-only config/code
+uses ~500MB not 10 × 500MB = 5GB."
+```
+
+---
+
+### 3. Database Shared Buffer Pool (most real-world)
+
+```
+"PostgreSQL has a shared_buffers pool — say 4GB.
+All database worker processes map this same 4GB
+into their own virtual address space.
+
+Worker 1 reads a page into the buffer → Worker 2 sees it instantly.
+No copying between processes. No IPC overhead.
+Just two virtual pointers to the same physical RAM."
+```
+
+---
+
+### 4. libc — The Simplest Example (good for warmup)
+
+```
+"Every single process on Linux uses libc (~2MB).
+With 500 processes running, without shared memory
+that's 500 × 2MB = 1GB just for libc.
+
+With shared memory: 2MB total.
+The OS loads libc once and maps it into every process's
+virtual address space. 498MB saved instantly."
+```
+
+---
+
+### How to structure your answer in interview
+
+```
+1. State the problem    "without this, each process needs its own copy"
+2. Give the number      "10 processes × 100MB = 1GB wasted"
+3. Give the fix         "shared memory maps same physical page to all"
+4. Give the constraint  "only works for read-only OR carefully synced data"
+5. Give the real cost   "writes need coordination — locks or CoW"
+```

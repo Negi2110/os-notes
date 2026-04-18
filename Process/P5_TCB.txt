@@ -1,0 +1,53 @@
+This screenshot introduces the **Thread Control Block (TCB)**. If the PCB is the manager's clipboard for the whole office (Process), the TCB is the specific **"To-Do List"** for each individual employee (Thread) working in that office.
+
+For a C++ developer, understanding the TCB is the key to understanding **Multithreading** and **Concurrency**.
+
+---
+
+## **1. The Relationship: PCB vs. TCB**
+In a multi-threaded program, the Process doesn't just have one execution path. It has many. 
+* The **PCB** still exists to manage global resources (like open files and the Page Table).
+* Each thread gets its own **TCB** to manage its specific execution progress.
+* **Vital Connection:** Every TCB contains a **Pointer to the parent PCB**, so the thread knows which "house" it belongs to.
+
+
+---
+
+## **2. TCB Content Breakdown**
+
+### **The "Snapshot" Info**
+* **TID (Thread ID):** A unique identifier for the thread.
+* **Thread State:** Is this thread *Ready, Running, or Blocked* (Waiting)? For example, Thread 1 might be running while Thread 2 is "Blocked" waiting for a Mutex lock.
+* **Program Counter (PC) & Registers:** This is the most important part of the TCB. It stores exactly where *this specific thread* is in the code. Because all threads share the same Code section, the PC tells the CPU which line of that shared code to execute for this thread.
+
+### **Management & Accounting**
+* **Process Control Info:** Tracks things like thread priority. In C++, you can often set a thread's priority to tell the OS to give it more CPU time.
+* **Accounting:** Tracks how much CPU time this specific thread has consumed. This helps the OS ensure one thread doesn't "starve" others.
+
+### **The Private Memory Link**
+* **Memory Management Info:** Specifically, this holds a **pointer to the Thread's unique Stack**. While threads share the Heap, they must have their own Stack to prevent their local variables from overwriting each other.
+
+---
+
+## **3. The "Lightweight" Context Switch**
+This is a high-probability interview topic for C++ roles. Why are threads faster than processes?
+
+* **Process Context Switch:** The Kernel must swap the entire memory map (Page Tables). This is slow and "flushes" the CPU cache.
+* **Thread Context Switch:** The Kernel only has to swap the **TCB** (the registers and the stack pointer). Since the Page Table (Memory Map) stays exactly the same, it is much faster.
+
+
+---
+
+## **4. Interview-Ready Summary for Notes**
+
+| Concept | Key Definition |
+| :--- | :--- |
+| **TCB** | A Kernel-level data structure that stores the execution state of a single thread. |
+| **Independence** | Each TCB has its own PC and Registers, allowing threads to run different functions simultaneously. |
+| **Shared Resources** | All TCBs in a process point to the same PCB, meaning they share the same files and memory map. |
+| **Performance** | Context switching between TCBs is "lightweight" because it avoids the overhead of switching virtual memory address spaces. |
+
+### **The "C++ Developer" Insight**
+When you use `std::thread` in C++, the OS creates one of these **TCBs** in the Kernel. If you create 10,000 threads, you are creating 10,000 TCBs and 10,000 separate Stacks. This is why "Thread Pools" are used—to reuse existing TCBs rather than constantly asking the Kernel to create and destroy them, which is expensive!
+
+Does the idea of the TCB acting as the "private bookmark" for each thread within the shared "book" of the Process make the visualization clearer?

@@ -1,0 +1,112 @@
+## DMA — The Cause and The Problem It Solves
+
+---
+
+### The Cause — Why DMA Was Needed
+
+```
+Early computers had one way to move data:
+CPU does everything.
+
+Keyboard pressed → CPU handles it.
+Disk read needed → CPU reads every byte.
+Network packet arrives → CPU copies every byte.
+
+For keyboard: fine.
+One keypress = a few bytes = CPU handles in nanoseconds.
+
+For disk/network: disaster.
+1GB file = 1 billion bytes.
+CPU must read each byte from peripheral register
+then write each byte to RAM.
+One by one.
+CPU is stuck doing nothing but copying
+for the entire duration of the transfer.
+```
+
+---
+
+### The Real Problem
+
+```
+CPU is the most expensive resource in the system.
+It can execute billions of instructions per second.
+Instead it is being used as a courier.
+Carrying bytes from one place to another.
+That is like hiring a surgeon to deliver mail.
+
+While CPU is copying:
+  Your application is frozen.
+  Other processes are waiting.
+  The system feels slow.
+  All that compute power wasted on moving data.
+
+This gets worse as data gets larger.
+Modern networks: 100Gbps.
+Modern SSDs: 7GB/s.
+Without DMA, CPU cannot keep up.
+It would do nothing but copy data all day.
+```
+
+---
+
+### What DMA Solves
+
+```
+DMA says:
+  "CPU, you are too valuable to copy bytes.
+   Tell me where to copy FROM and WHERE to put it.
+   Go do something useful.
+   I will tell you when I am done."
+
+CPU programs the DMA controller once:
+  Source: network card buffer
+  Destination: RAM address 0x5000
+  Size: 4096 bytes
+  GO.
+
+CPU walks away and runs your application.
+DMA controller moves the data autonomously.
+DMA taps CPU on the shoulder when done (interrupt).
+CPU spent ~1µs on setup and ~1µs on completion.
+The entire multi-millisecond transfer: CPU was free.
+```
+
+---
+
+### The Analogy That Makes It Click
+
+```
+Without DMA:
+  You are a chef (CPU).
+  Every time an ingredient arrives at the door,
+  you stop cooking, walk to the door,
+  carry the ingredient to the kitchen,
+  walk back, resume cooking.
+  For every single ingredient.
+  Food never gets made.
+
+With DMA:
+  You hire a kitchen porter (DMA controller).
+  You tell them: "fetch everything from the delivery bay,
+  put it on shelf B, tell me when done."
+  You keep cooking the entire time.
+  Porter taps you when everything is on the shelf.
+  You spent 5 seconds giving instructions.
+  Porter spent 10 minutes doing the carrying.
+  You cooked the entire time.
+```
+
+---
+
+### One-Line Summary
+
+```
+Cause:   CPU was wasting its time copying bytes
+         from peripherals to RAM one by one,
+         blocking all real computation.
+
+Solved:  DMA offloads the copying to dedicated hardware,
+         freeing the CPU to do actual work
+         while the transfer happens in parallel.
+```
