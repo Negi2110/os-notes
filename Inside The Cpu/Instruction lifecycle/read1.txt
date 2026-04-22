@@ -7,7 +7,7 @@
 ```
 Every instruction your program runs goes through these stages:
 
-  FETCH  →  DECODE  →  EXECUTE  →  READ  →  WRITE
+  FETCH  →  DECODE  →  EXECUTE  →  READ(optional)  →  WRITE(to register/memory)
 
 Each stage has a dedicated CPU component.
 Stages can OVERLAP across multiple instructions (pipelining).

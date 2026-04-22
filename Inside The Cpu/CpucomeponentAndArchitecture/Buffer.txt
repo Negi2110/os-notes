@@ -1,0 +1,107 @@
+## Buffer — Simple Explanation
+
+---
+
+### Core Idea
+
+```
+A buffer is a temporary holding area for data
+that is waiting to move from one place to another.
+
+Source → [BUFFER] → Destination
+
+Data sits in the buffer because:
+  Source produces data at a different speed than destination consumes it.
+  You want to batch small writes into one large write.
+  You need to hold data while the receiver gets ready.
+```
+
+---
+
+### The Real-World Analogy
+
+```
+A bus stop is a buffer.
+
+People (data) arrive continuously.
+The bus (destination) comes every 10 minutes.
+The bus stop HOLDS people until the bus arrives.
+Without the bus stop — people would have nowhere to wait.
+
+Same idea:
+  Your keyboard typing (fast bursts)
+  OS keyboard buffer (holds keystrokes)
+  Application reads buffer (when ready)
+```
+
+---
+
+### Where You See Buffers in Computing
+
+```
+Network buffer:
+  Packets arrive from internet faster than app can process.
+  OS holds them in a buffer.
+  App reads when ready.
+  Without buffer → packets dropped.
+
+Disk write buffer:
+  App writes 1 byte at a time.
+  Writing 1 byte to disk each time = insane overhead.
+  OS buffers writes in RAM.
+  Flushes to disk in one large batch.
+  Much more efficient.
+
+CPU instruction buffer (L1i):
+  RAM gives CPU 64 bytes at once.
+  CPU executes 4 bytes at a time.
+  The other 60 bytes sit in L1i buffer waiting.
+
+DMA buffer:
+  DMA writes data to a pinned RAM region.
+  That region IS a buffer.
+  CPU reads it when DMA signals done.
+
+Database buffer pool:
+  PostgreSQL shared_buffers.
+  Disk pages cached in RAM.
+  Reads/writes go to RAM buffer first.
+  Disk touched only when necessary.
+
+Video streaming buffer:
+  YouTube downloads ahead of what you're watching.
+  Holds future frames in memory.
+  Prevents stuttering when network slows.
+```
+
+---
+
+### Why Buffers Exist — The Three Reasons
+
+```
+1. Speed mismatch
+   Producer and consumer run at different speeds.
+   Buffer absorbs the difference.
+   RAM (fast) buffering for disk (slow).
+
+2. Batching
+   Many small operations → one large operation.
+   10,000 × 1-byte writes → 1 × 10,000-byte write.
+   Massively more efficient.
+
+3. Decoupling
+   Producer doesn't wait for consumer.
+   Consumer doesn't wait for producer.
+   Both run independently.
+   Buffer sits between them.
+```
+
+---
+
+### One Line
+
+```
+Buffer = temporary RAM holding area that smooths out
+the speed difference between a fast producer
+and a slow consumer (or vice versa).
+```
