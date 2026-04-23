@@ -1,0 +1,245 @@
+# Parallelism, Hyperthreading, SIMD — Master Notes
+
+---
+
+## 0. The Goal — Keep CPU Busy
+
+```
+CPU is fast. The problem is keeping it fed with work.
+Four techniques to maximise CPU utilisation:
+
+  Pipelining      → overlap stages of one instruction stream
+  Parallelism     → multiple cores doing different work
+  Hyperthreading  → fake two cores from one physical core
+  SIMD            → one instruction operates on multiple data at once
+```
+
+---
+
+## 1. Parallelism — Multiple Cores
+
+```
+One big task split across multiple processes/threads.
+Each process/thread runs on its own CPU core.
+Truly simultaneous execution.
+
+Without parallelism:          With parallelism:
+  ┌──────────┐                  ┌─────────────────────┐
+  │ Big Task │                  │      Big Task        │
+  └────┬─────┘                  └──────┬──────────┬───┘
+       │                               │          │
+    [CPU 1]                        [CPU 1]    [CPU 2]
+    (all work)                   (Process 1) (Process 2)
+                                 simultaneous!
+
+Real examples:
+  Web server:    each request → separate thread → separate core
+  Video encode:  split frames across cores
+  Database:      parallel query execution across cores
+  Game engine:   physics thread, render thread, audio thread
+```
+
+---
+
+## 2. Hyperthreading — Two Logical Cores, One Physical
+
+```
+Problem:
+  One process running on one core.
+  Process stalls waiting for RAM (50–100ns).
+  Core sits completely idle during that stall.
+
+Hyperthreading fix:
+  One physical core pretends to be TWO logical cores.
+  OS sees 2 cores. Hardware is 1 core.
+
+How it works:
+  Each logical core gets its OWN:
+    Registers (including PC, SP — full register file)
+    State (which instruction it's on)
+
+  But they SHARE:
+    ALU
+    CU
+    L1, L2 caches
+
+  When logical core 1 stalls (waiting for RAM):
+    Logical core 2 uses the ALU immediately.
+    No wasted cycles.
+    Core stays busy.
+
+  Physical core:
+  ┌─────────────────────────────┐
+  │   Logical Core 1 (Process 1)│  ← own registers + PC
+  │   Logical Core 2 (Process 2)│  ← own registers + PC
+  │   ─────────────────────────  │
+  │   Shared: ALU, CU, L1, L2   │
+  └─────────────────────────────┘
+
+Benefit:
+  ~20–30% better throughput (not 2×).
+  Not 2× because ALU is still shared.
+  But much better than leaving core idle during stalls.
+
+OS sees:
+  4-core CPU with hyperthreading → 8 logical cores.
+  Task manager shows 8 cores.
+  Reality: 4 physical cores.
+```
+
+---
+
+## 3. SIMD — Single Instruction Multiple Data
+
+```
+Normal execution (scalar):
+  One instruction operates on ONE value.
+
+  Add a1, b1    → 1 result
+  Add a2, b2    → 1 result
+  Add a3, b3    → 1 result
+  Add a4, b4    → 1 result
+  4 instructions. 4 cycles.
+
+SIMD execution (vector):
+  One instruction operates on MULTIPLE values simultaneously.
+
+  Add [a1,a2,a3,a4], [b1,b2,b3,b4] → [r1,r2,r3,r4]
+  1 instruction. 1 cycle. 4 results.
+
+  4× throughput with 1 instruction.
+```
+
+### How SIMD Works
+
+```
+SIMD uses WIDE registers (128, 256, or 512 bits).
+Pack multiple values into one register.
+
+128-bit register with 32-bit floats:
+  [ float1 | float2 | float3 | float4 ]
+  All four processed by ONE ADD instruction.
+
+256-bit register (AVX):
+  [ f1 | f2 | f3 | f4 | f5 | f6 | f7 | f8 ]
+  Eight floats added in ONE instruction. 8× throughput.
+
+512-bit register (AVX-512):
+  16 floats in one instruction. 16× throughput.
+```
+
+### SIMD Implementations
+
+```
+x86:
+  SSE    → 128-bit registers (4 floats)
+  AVX    → 256-bit registers (8 floats)
+  AVX-512→ 512-bit registers (16 floats)
+
+ARM:
+  NEON   → 128-bit registers (4 floats or 16 bytes)
+  SVE    → scalable vector (up to 2048-bit)
+
+Used in:
+  Gaming         → physics, matrix math, lighting calculations
+  Databases      → B-tree comparisons, sorting, filtering
+  ML/AI          → matrix multiplication (core of neural networks)
+  Image/video    → pixel processing (every filter you've ever used)
+  Audio          → signal processing, mixing
+  Cryptography   → AES encryption hardware acceleration
+```
+
+### SIMD Example in Code
+
+```cpp
+// Scalar (no SIMD) — 4 separate adds:
+float a[4] = {1,2,3,4};
+float b[4] = {5,6,7,8};
+float r[4];
+for (int i = 0; i < 4; i++)
+    r[i] = a[i] + b[i];   // 4 instructions
+
+// SIMD (ARM NEON) — 1 instruction:
+float32x4_t va = vld1q_f32(a);    // load 4 floats into vector reg
+float32x4_t vb = vld1q_f32(b);    // load 4 floats into vector reg
+float32x4_t vr = vaddq_f32(va,vb);// ONE add = 4 results
+vst1q_f32(r, vr);                  // store result
+
+// Compiler often auto-vectorises simple loops automatically.
+// -O2 or -O3 flags enable auto-vectorisation.
+```
+
+---
+
+## 4. All Four Techniques Together
+
+```
+Technique       Level           Mechanism               Speedup
+────────────────────────────────────────────────────────────────
+Pipelining      Instruction     Overlap F/D/E/W stages  ~4–20×
+Parallelism     Process/Thread  Multiple physical cores  ~N× (N cores)
+Hyperthreading  Thread          Share core, own regs     ~1.2–1.3×
+SIMD            Data            Wide registers           ~4–16×
+
+Combined on a modern 8-core CPU with hyperthreading and AVX:
+  16 logical cores × 8 floats per SIMD × pipeline depth
+  = potentially hundreds of operations per cycle
+```
+
+---
+
+## 5. Hyperthreading vs True Parallelism
+
+```
+True Parallelism (multi-core):
+  Two physical ALUs.
+  Two instructions execute LITERALLY simultaneously.
+  2× compute throughput possible.
+
+Hyperthreading:
+  One physical ALU shared between two logical cores.
+  Only ONE executes at any moment.
+  The other fills stall time (memory waits, cache misses).
+  Not 2× compute. ~1.2–1.3× throughput.
+
+When hyperthreading helps most:
+  Workloads with lots of memory stalls (database, server).
+  Core frequently waiting on cache miss → other thread runs.
+
+When hyperthreading doesn't help:
+  Pure compute workloads (already using ALU 100%).
+  Adding a second logical thread just contends for the same ALU.
+  Can even hurt due to cache sharing between threads.
+```
+
+---
+
+## 6. Summary Table
+
+```
+Technique        Problem it solves           Real example
+─────────────────────────────────────────────────────────────────
+Pipelining       Stages idle between instrs  Every modern CPU
+Parallelism      One core not enough         Web server, video encode
+Hyperthreading   Core idle during stalls     Database servers
+SIMD             One value per instruction   ML, gaming, image proc
+```
+
+---
+
+## 7. One-Line Interview Answers
+
+**"What is parallelism?"**
+Splitting work across multiple CPU cores so different threads execute truly simultaneously — each core has its own ALU and runs independently.
+
+**"What is hyperthreading?"**
+One physical core exposes two logical cores to the OS — each has its own register file but shares the ALU and caches — so when one thread stalls on memory, the other uses the idle ALU instead of wasting cycles.
+
+**"Why is hyperthreading not 2× faster?"**
+The ALU is still shared — only one thread executes at a time, the benefit comes from filling stall cycles, giving ~20–30% throughput improvement not 2×.
+
+**"What is SIMD?"**
+Single Instruction Multiple Data — one instruction operates on multiple values packed into a wide register (128–512 bit), giving 4–16× throughput for data-parallel operations like matrix math or pixel processing.
+
+**"What is auto-vectorisation?"**
+The compiler automatically converts scalar loops into SIMD instructions when it detects the loop iterations are independent — enabled by -O2/-O3 flags, no code changes needed.

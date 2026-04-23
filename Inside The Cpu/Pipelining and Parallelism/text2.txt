@@ -1,0 +1,219 @@
+# CPU Wait Times — Master Notes
+
+---
+
+## 0. The Core Problem
+
+```
+CPU executes at ~0.3ns per cycle.
+Everything it talks to is dramatically slower.
+
+The CPU is a sports car stuck behind a tractor.
+It can go 200mph. The road only allows 10mph.
+Most of the time it is just waiting.
+```
+
+---
+
+## 1. Where CPU Waits — The Full Picture
+
+```
+Operation              Latency        CPU cycles wasted
+───────────────────────────────────────────────────────
+Register access        0.3 ns         0      ← no wait
+L1 cache hit           1 ns           3
+L2 cache hit           5 ns           15
+L3 cache hit           15 ns          45
+Main RAM access        100 ns         300
+SSD read               100 µs         300,000
+HDD read               10 ms          30,000,000
+Network (same DC)      500 µs         1,500,000
+Network (cross region) 100 ms         300,000,000
+
+Every time CPU touches anything outside L1:
+it sits completely idle waiting for data to arrive.
+```
+
+---
+
+## 2. IO Causes Wait — The Biggest Killer
+
+```
+IO = anything involving:
+  Disk read/write
+  Network send/receive
+  Database query
+  File system access
+
+What happens during IO:
+  1. Process requests IO (read file, network call)
+  2. OS starts the IO operation
+  3. Process is BLOCKED — cannot continue
+  4. CPU has nothing to do for this process
+  5. OS context switches to another process
+  6. IO completes (interrupt fires)
+  7. OS wakes the original process
+  8. Process resumes
+
+During steps 3–6:
+  CPU is running OTHER processes.
+  But if no other work exists → CPU is genuinely idle.
+  Idle CPU = wasted money, wasted time.
+```
+
+---
+
+## 3. Why CPU Cannot Wait — The Waste Problem
+
+```
+CPU costs money whether working or not.
+Server running at 5% CPU utilisation:
+  95% of the time you paid for is wasted.
+  You're running a $10,000 server as a $500 server.
+
+IO-bound workloads are the main cause:
+  Web server waiting for database response.
+  Database waiting for disk read.
+  Application waiting for network reply.
+
+Each wait = CPU idle = wasted capacity.
+```
+
+---
+
+## 4. Solutions — How to Hide Wait Times
+
+```
+1. THREADING / MULTIPROCESSING
+   While thread A waits for IO:
+   CPU runs thread B, C, D...
+   IO wait of one thread hidden behind work of others.
+
+   e.g. web server with 1000 threads:
+   Thread 1 waits for DB → CPU runs thread 2
+   Thread 2 waits for disk → CPU runs thread 3
+   CPU stays busy as long as SOME thread has work.
+
+2. ASYNC / NON-BLOCKING IO
+   Single thread. No blocking.
+   Instead of waiting for IO → register a callback → move on.
+   When IO completes → callback fires → handle result.
+   One thread handles thousands of concurrent IO operations.
+
+   e.g. Node.js, nginx event loop.
+   One thread. Near-zero idle time.
+   CPU processes callbacks constantly.
+
+3. CACHING
+   Never go to slow storage twice for the same data.
+   First access: slow (disk/network).
+   All future accesses: fast (RAM cache).
+   Eliminates wait for repeated reads.
+
+4. PREFETCHING
+   CPU predicts what data you'll need next.
+   Starts fetching it BEFORE you ask.
+   By the time you ask → data is already in cache.
+   Wait time = zero (hidden by prediction).
+
+5. DMA
+   Offload data movement to DMA controller.
+   CPU programs DMA → goes off to do real work.
+   DMA handles the slow IO transfer independently.
+   CPU only involved at start and end (interrupt).
+
+6. BATCHING
+   Don't do 1000 small IO operations.
+   Collect them → do 1 large IO operation.
+   Amortise the overhead across many requests.
+   Fewer total waits.
+```
+
+---
+
+## 5. CPU Utilisation — What to Aim For
+
+```
+0–30%   → IO bound. CPU waiting most of the time.
+           Fix: async IO, more threads, caching.
+
+30–70%  → Healthy. Mix of compute and IO.
+           System well balanced.
+
+70–100% → CPU bound. Compute is the bottleneck.
+           Fix: better algorithms, SIMD, more cores,
+                reduce unnecessary computation.
+
+100%    → Saturated. Adding more requests makes things worse.
+           Fix: scale horizontally (more servers).
+
+Tools to measure:
+  top / htop        → CPU% per process
+  vmstat            → system-wide CPU idle time
+  perf              → where CPU time is actually spent
+  iostat            → IO wait time specifically
+```
+
+---
+
+## 6. IO Wait Specifically
+
+```
+iowait (shown in top as %wa):
+  Percentage of time CPU was idle AND waiting for IO.
+  Not doing useful work. Not sleeping. Just waiting.
+
+  High iowait (>20%) means:
+    Disk or network is the bottleneck.
+    CPU wants to work but has nothing to execute
+    because all processes are blocked on IO.
+
+  Fix for high iowait:
+    Faster storage (SSD instead of HDD).
+    More RAM (bigger cache = fewer disk reads).
+    Async IO (don't block processes on IO).
+    Read-ahead / prefetch (start IO before it's needed).
+```
+
+---
+
+## 7. The Key Insight
+
+```
+CPU speed has improved 1000× in 30 years.
+RAM speed has improved ~10× in 30 years.
+Disk speed has improved ~10× in 30 years.
+Network latency has barely changed.
+
+The gap between CPU speed and everything else
+gets WIDER every year.
+
+This means:
+  Writing fast code is not about making the CPU compute faster.
+  It is about minimising how long the CPU sits waiting.
+  Cache locality, async IO, prefetching, batching —
+  all of these are about feeding the CPU fast enough
+  to keep it from waiting.
+
+The CPU is never the bottleneck.
+The wait is the bottleneck.
+```
+
+---
+
+## 8. One-Line Interview Answers
+
+**"What is CPU wait time?"**
+Time the CPU spends idle because it's waiting for a slow operation — cache miss, RAM access, disk IO, or network — to complete before it can continue executing.
+
+**"What causes high CPU wait?"**
+IO-bound workloads where processes are frequently blocked waiting for disk or network responses, leaving the CPU with nothing to execute.
+
+**"How do you reduce CPU wait time?"**
+Async/non-blocking IO to avoid blocking threads, caching to eliminate repeat slow reads, prefetching to load data before it's needed, DMA to offload data movement, and batching to amortise IO overhead.
+
+**"What is iowait?"**
+The percentage of time the CPU was idle specifically because all runnable processes were blocked waiting for IO — a key indicator that storage or network is the bottleneck, not compute.
+
+**"Why does cache locality matter so much?"**
+Every cache miss sends the CPU to RAM (100ns = 300 wasted cycles) or worse to disk — keeping frequently accessed data in L1/L2 cache is the single biggest lever for eliminating CPU wait time.
