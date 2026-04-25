@@ -1,0 +1,382 @@
+# Process vs Thread — Master Notes
+
+---
+
+## 0. The Core Difference
+
+```
+Process = an isolated instance of a program
+          has its OWN everything
+
+Thread  = a lightweight unit of execution INSIDE a process
+          shares almost everything with siblings
+```
+
+---
+
+## 1. Process — Deep Dive
+
+### What a Process Is
+
+```
+When you run a program:
+  OS creates a process.
+  Process gets its own VIRTUAL address space.
+  Nothing else can touch that space.
+
+Memory layout (high → low address):
+  ┌─────────────────┐ 0xffffffff (high)
+  │     Stack       │ ← local variables, function calls, grows DOWN
+  │       ↓         │
+  │    (gap)        │
+  │       ↑         │
+  │     Heap        │ ← malloc/new, grows UP
+  ├─────────────────┤
+  │  Data (static)  │ ← global variables, initialised data
+  ├─────────────────┤
+  │  Text / Code    │ ← compiled instructions (read only)
+  └─────────────────┘ 0x00000000 (low)
+```
+
+### Process Control Block (PCB)
+
+```
+Kernel stores metadata about every process in a PCB.
+One PCB per process. Stored in kernel memory.
+
+PCB contains:
+  PID              → unique process ID
+  Process state    → running / sleeping / stopped / zombie
+  Program counter  → address of next instruction
+  Registers        → all CPU register values (saved on context switch)
+  Page table       → virtual → physical memory mapping
+  CPU/memory usage → accounting, scheduling
+  Memory info      → pointers to code, stack, heap
+  IO info          → open file descriptors
+  IPC info         → semaphores, mutexes, shared memory, message queues
+  Priority         → scheduling priority
+```
+
+### Kernel Process Table
+
+```
+Kernel maintains a PROCESS TABLE:
+  PID → PCB mapping for quick lookup.
+  Stored entirely in kernel space.
+
+  Process Table:
+  ┌─────┬──────────┐
+  │ PID │   PCB    │
+  ├─────┼──────────┤
+  │ 100 │ 0x222222 │ → PCB 100: running, pc=0x555555...
+  │ 200 │ 0x333333 │ → PCB 200: stopped, pc=0x999999...
+  └─────┴──────────┘
+
+When OS needs to manage process 100:
+  Look up PID 100 → get PCB address → read/write state.
+```
+
+---
+
+## 2. Thread — Deep Dive
+
+### What a Thread Is
+
+```
+A thread is a lightweight process that lives INSIDE a process.
+Multiple threads share the same process resources.
+
+What threads SHARE (same process):
+  Code / Text segment   → same compiled instructions
+  Heap                  → shared dynamic memory
+  Data segment          → shared global variables
+  Page table            → same virtual address space
+  File descriptors      → same open files
+  PCB                   → same process control block
+
+What each thread has PRIVATELY:
+  Stack                 → own local variables, own call stack
+  Program counter (PC)  → own position in code
+  Registers             → own CPU register state
+  Thread ID (TID)       → unique identifier
+
+Memory layout with threads:
+  ┌──────────────────────┐ high
+  │  Main process stack  │ ← main thread's stack
+  ├──────────────────────┤
+  │  Thread 1 stack      │ ← thread 1's private stack
+  ├──────────────────────┤
+  │  Thread 2 stack      │ ← thread 2's private stack
+  ├──────────────────────┤
+  │       ↑              │
+  │      Heap            │ ← SHARED by all threads
+  ├──────────────────────┤
+  │  Data (static)       │ ← SHARED by all threads
+  ├──────────────────────┤
+  │  Text / Code         │ ← SHARED by all threads
+  └──────────────────────┘ low
+```
+
+### Thread Control Block (TCB)
+
+```
+Kernel stores metadata about every thread in a TCB.
+One TCB per thread. Points back to parent PCB.
+
+TCB contains:
+  TID              → unique thread ID
+  Thread state     → running / sleeping / stopped
+  Program counter  → this thread's current instruction
+  Registers        → this thread's CPU register state
+  Stack pointer    → this thread's stack location
+  Priority         → scheduling priority
+  CPU/memory usage → accounting
+  Pointer to PCB   → which process owns this thread
+```
+
+### Kernel Thread Table
+
+```
+Kernel maintains a THREAD TABLE alongside process table.
+
+  Thread Table:
+  ┌─────┬──────┬──────────┐
+  │ PID │ TID  │   TCB    │
+  ├─────┼──────┼──────────┤
+  │ 100 │ 1001 │ 0x222222 │ → TCB 1001: running, pc=0x555555
+  │ 100 │ 1002 │ 0x333333 │ → TCB 1002: stopped, pc=0x999999
+  └─────┴──────┴──────────┘
+  Both threads belong to PID 100 → share same PCB.
+```
+
+---
+
+## 3. Process vs Thread — Side by Side
+
+```
+Property              Process                 Thread
+─────────────────────────────────────────────────────────────
+Memory space          Own virtual memory      Shared with process
+Code segment          Own copy                Shared
+Heap                  Own                     Shared
+Stack                 Own                     Own (private)
+Program counter       Own                     Own (private)
+Registers             Own                     Own (private)
+Page table            Own                     Shared (same process)
+File descriptors      Own                     Shared
+Creation cost         High (copy VM setup)    Low (just new stack+TCB)
+Context switch cost   High (TLB flush, etc.)  Low (same page table)
+Communication         IPC (pipes, sockets)    Direct (shared memory)
+Crash impact          Only this process dies  Can crash whole process
+Isolation             Full isolation          No isolation from siblings
+Example               Chrome tab, nginx worker Worker thread in server
+```
+
+---
+
+## 4. Fork — Creating a New Process
+
+```
+fork() = system call that creates a child process.
+
+What happens:
+  1. New process created with new PID.
+  2. Child gets new virtual address space.
+  3. Child's page table initially points to SAME physical pages as parent.
+  4. Pages marked READ-ONLY.
+  5. Child runs independently of parent.
+
+Key: fork is INSTANT — no copying happens yet.
+     Copy on Write (CoW) handles the rest lazily.
+```
+
+### Copy on Write (CoW) — Step by Step
+
+```
+Before fork: only Process A exists.
+
+  A virtual:  [P1][P2][P3][P4]
+  A page table:
+    VMA 4000  → PA 28,000
+    VMA 8000  → PA 40,000
+    VMA 12000 → PA 44,000
+    VMA 16000 → PA 48,000
+
+After fork: B created from A.
+
+  A virtual:  [P1][P2][P3][P4]
+  B virtual:  [P1][P2][P3][P4]  ← identical
+
+  B page table (initially same as A):
+    VMA 4000  → PA 28,000  ← points to SAME physical page as A
+    VMA 8000  → PA 40,000  ← same
+    VMA 12000 → PA 44,000  ← same
+    VMA 16000 → PA 48,000  ← same
+
+  Physical RAM: still just ONE copy of each page.
+  Both A and B reading same physical memory. Pages = read-only.
+  No RAM wasted. Fork was instant.
+
+Now A writes to P1:
+  Write triggers page fault (page is read-only).
+  OS: "A is about to modify a shared page."
+  OS allocates NEW physical page for B's P1.
+  Copies A's P1 content → B's new page.
+  Updates B's page table: VMA 4000 → PA 12,000 (new location).
+  A's page table unchanged: VMA 4000 → PA 28,000.
+  A now writes freely to its own copy.
+  B still has original data.
+
+Result:
+  A page table:
+    VMA 4000  → PA 28,000  (A's private copy, modified)
+  B page table:
+    VMA 4000  → PA 12,000  (B's private copy, original data)
+
+  Only pages that DIVERGE get duplicated.
+  Pages that are only READ → shared forever → zero RAM cost.
+```
+
+### Real World Use of Fork + CoW
+
+```
+Redis asynchronous durability (BGSAVE):
+  Redis forks a child process to write snapshot to disk.
+  Child inherits all of Redis's data instantly (CoW).
+  Child reads data → writes to disk.
+  Parent continues serving requests.
+  Only modified pages get copied (CoW).
+  Snapshot = point-in-time consistent view of data.
+  No need to stop serving requests.
+  No need to copy all data upfront.
+```
+
+---
+
+## 5. Shared Memory
+
+```
+Multiple processes/threads sharing the same physical memory.
+
+How:
+  mmap() system call maps same physical pages into multiple virtual spaces.
+  Each process has DIFFERENT virtual address for the SAME physical page.
+  Changes by one process are instantly visible to others.
+
+  Process A virtual: 0x1000 → physical page 500
+  Process B virtual: 0x8000 → physical page 500  ← same page!
+
+Used in:
+  PostgreSQL shared_buffers  → all worker processes share buffer pool
+  Databases                  → shared cache between connections
+  IPC                        → fast communication between processes
+  Threads                    → threads automatically share heap
+
+mmap example:
+  void* ptr = mmap(NULL, size,
+                   PROT_READ|PROT_WRITE,
+                   MAP_SHARED, fd, 0);
+  Both processes open the same file → map it → share memory.
+```
+
+---
+
+## 6. PostgreSQL — Process Model
+
+```
+PostgreSQL uses PROCESSES not threads.
+Each connection → fork() → new backend process.
+
+Architecture:
+  Postmaster (main process)
+    → Backend process (connection 1)
+    → Backend process (connection 2)
+    → Backend process (connection 3)
+    → Background workers (autovacuum, etc.)
+    → Auxiliary processes (WAL writer, checkpointer)
+
+All backend processes share:
+  shared_buffers  → shared memory buffer pool
+  WAL records     → write-ahead log shared memory
+
+Why processes not threads?
+  Crash isolation: one backend crashes → only that connection dies.
+  With threads: one crash = entire PostgreSQL dies.
+  Simpler code: no locking for most per-connection state.
+
+Debate: should PostgreSQL move to threads?
+  Threads: lower memory per connection, faster context switch.
+  Processes: better isolation, simpler, proven over 30 years.
+  Long-running discussion in PostgreSQL community.
+```
+
+---
+
+## 7. Python CoW Bug
+
+```
+Python bug with fork + reference counting:
+
+Python tracks object lifetimes with reference counts.
+Every object has a counter: how many references point to it.
+Counter stored IN the object (in memory).
+
+Problem:
+  Python has global singletons: None, True, False.
+  These live on SHARED pages after fork.
+  Python's GC constantly updates their reference counts.
+  Updating a reference count = WRITE to the page.
+  Write to shared page → CoW triggers → page gets copied.
+
+Result:
+  Process forked → should share most memory.
+  But Python's refcounting writes to almost every page.
+  Every page gets CoW-copied.
+  Memory usage doubles instead of staying flat.
+
+Fix in Python 3.12+:
+  Immortalisation of singletons.
+  None, True, False reference counts never change.
+  No writes to those pages → no CoW → pages stay shared.
+```
+
+---
+
+## 8. Summary Table
+
+```
+Concept          Key Point
+──────────────────────────────────────────────────────────────
+Process          Own VM, own everything, full isolation
+Thread           Shared VM, own stack+PC only, lightweight
+PCB              Kernel metadata for a process
+TCB              Kernel metadata for a thread (points to PCB)
+Fork             New process, instant via CoW
+CoW              Pages shared until written, then private copy
+Shared memory    Different virtual addresses, same physical page
+mmap             System call to create shared memory mappings
+PostgreSQL       Process-per-connection model, shared buffers
+Python CoW bug   Refcounting writes trigger CoW on shared pages
+```
+
+---
+
+## 9. One-Line Interview Answers
+
+**"What is the difference between a process and a thread?"**
+A process is an isolated instance with its own virtual memory; a thread is a lightweight execution unit inside a process that shares the heap, code, and data but has its own stack and program counter.
+
+**"What is a PCB?"**
+The kernel's metadata structure for a process — stores PID, state, program counter, registers, page table, file descriptors, and IPC info — everything the OS needs to manage and context-switch a process.
+
+**"What is Copy on Write?"**
+After fork, parent and child share the same physical pages marked read-only. On the first write to any page, the OS creates a private copy for the writer — pages that are never written stay shared forever, making fork nearly instant.
+
+**"Why does PostgreSQL use processes instead of threads?"**
+Crash isolation — if one backend process dies, only that connection is lost. With threads, one crash kills the entire server. The trade-off is higher memory per connection but better reliability.
+
+**"What is the Python CoW bug?"**
+Python's reference counting constantly writes to objects (including global singletons like None) after fork, causing CoW to copy those pages — negating the memory sharing benefit of fork and doubling memory usage.
+
+**"What is shared memory?"**
+Multiple processes mapping the same physical pages into their own (different) virtual addresses via mmap — changes by one process are instantly visible to others with no copying overhead.

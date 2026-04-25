@@ -1,0 +1,336 @@
+# Context Switching — Master Notes
+
+---
+
+## 0. The Core Insight
+
+```
+CPU has no concept of a "process".
+CPU only knows:
+  → What address to fetch from (PC)
+  → What values are in registers
+  → Where the page table is (PTBR)
+
+This collection of values = CONTEXT.
+Switching processes = swapping one context for another.
+That's ALL a context switch is.
+```
+
+---
+
+## 1. What is Context?
+
+```
+Context = the complete CPU state for one process:
+
+  PC   (Program Counter)   → which instruction to run next
+  SP   (Stack Pointer)     → top of current stack
+  BP   (Base Pointer)      → base of current stack frame
+  LR   (Link Register)     → return address after function call
+  PTBR (Page Table Base)   → where this process's page table lives
+  General registers        → RAX, RBX, RCX... (intermediate values)
+  Flags register           → result of last comparison (zero, carry...)
+
+OS loads this into CPU → CPU executes.
+OS swaps it out → CPU forgets this process entirely.
+```
+
+---
+
+## 2. Context Switch — Step by Step
+
+```
+Currently running: Process 100 (pc=4012, ptbr=0x555555)
+Want to switch to: Process 200 (pc=8008, ptbr=0x444444)
+
+Step 1 — SAVE current context:
+  OS reads all CPU registers.
+  Writes them into Process 100's PCB in memory.
+  PCB 100 now stores: pc=4012, ptbr=0x555555, sp, bp, all registers.
+  Process 100 state = "ready" (was running, now paused).
+
+Step 2 — LOAD new context:
+  OS reads Process 200's PCB from memory.
+  Writes all saved values into CPU registers.
+  CPU now has: pc=8008, ptbr=0x444444.
+  Process 200 state = "running".
+
+Step 3 — FLUSH TLB:
+  TLB still has Process 100's virtual→physical translations.
+  Process 200 has different page table → different translations.
+  TLB must be flushed (all entries invalidated).
+  Process 200 starts with cold TLB → first N accesses = misses.
+
+Step 4 — CPU resumes:
+  CPU fetches instruction at pc=8008.
+  Process 200 runs as if nothing happened.
+  Process 100 has no idea it was paused.
+```
+
+---
+
+## 3. Visual — The Context Switch Story
+
+```
+BEFORE SWITCH:
+  CPU: pc=4008, ptbr=0x555555 (running Process 100)
+
+  PCB 100: running, page table=0x555555, pc=4008
+  PCB 200: ready,   page table=0x444444, pc=8008
+
+CPU advances:
+  CPU: pc=4012, ptbr=0x555555
+  PCB 100 still shows pc=4008 ← PCB not updated yet, only CPU has new value
+
+OS initiates context switch:
+  SAVE: write pc=4012 to PCB 100
+  PCB 100: ready, page table=0x555555, pc=4012  ← updated
+
+  LOAD: read PCB 200 → push into CPU
+  CPU: pc=8008, ptbr=0x444444
+
+  FLUSH TLB.
+
+AFTER SWITCH:
+  CPU: pc=8008, ptbr=0x444444 (now running Process 200)
+  PCB 100: ready (frozen at pc=4012, will resume here later)
+  PCB 200: running
+```
+
+---
+
+## 4. TLB Flush — The Hidden Cost
+
+```
+TLB = cache of virtual → physical address translations.
+Every process has DIFFERENT page table → different translations.
+Process A's TLB entries are WRONG for Process B.
+
+On context switch:
+  Full TLB flush required.
+  All cached translations thrown away.
+  Process B starts with completely empty TLB.
+  First ~100+ memory accesses → TLB misses → page table walks.
+  Each miss = extra RAM read = ~100ns penalty.
+  TLB slowly warms up as B accesses its working set.
+
+This is why context switches are expensive:
+  Not just saving/loading registers (cheap).
+  TLB flush + cold TLB warmup = real performance hit.
+  Heavy multitasking = constant TLB flushes = poor performance.
+```
+
+---
+
+## 5. TLB ASID — Avoiding the Flush
+
+```
+Problem: flushing TLB on every context switch is expensive.
+
+Solution — ASID (Address Space Identifier):
+  Tag every TLB entry with a process ID (ASID).
+  255 possible ASID values (8-bit).
+
+  TLB entry format:
+  ┌──────┬──────┬────────────┬────────────┐
+  │ Tag  │ ASID │  Virtual   │  Physical  │
+  │      │      │  Address   │  Address   │
+  └──────┴──────┴────────────┴────────────┘
+
+  Process A's entries tagged ASID=1.
+  Process B's entries tagged ASID=2.
+
+  On context switch:
+    Just change the current ASID register.
+    NO TLB flush needed.
+    A's and B's entries coexist in TLB simultaneously.
+    MMU only uses entries matching current ASID.
+
+  When all 255 ASIDs used → flush and reassign.
+
+Used in:
+  ARM (called ASID)
+  Intel x86-64 (called PCID — Process Context ID, since Westmere)
+
+Benefit: ~20–30% reduction in context switch overhead.
+```
+
+---
+
+## 6. Threads — Cheaper Context Switch
+
+```
+Thread context switch vs Process context switch:
+
+Process switch:
+  Save all registers → load all registers.
+  FLUSH TLB (different page table).
+  Cold TLB warmup.
+  Expensive.
+
+Thread switch (same process):
+  Save all registers → load all registers.
+  NO TLB flush (same page table, same PTBR).
+  TLB entries remain valid.
+  Much cheaper.
+
+Why no TLB flush for threads?
+  Threads of same process share the same virtual address space.
+  Same page table = same translations = TLB still valid.
+
+This is the main performance advantage of threads over processes.
+PostgreSQL debate: threads would reduce context switch cost significantly
+at the expense of isolation.
+
+Andres Freund (PostgreSQL contributor) noted:
+  "Cross-process context switches are inherently more expensive.
+   With large connection counts we spend significant time on TLB misses
+   because you can't share TLB across processes."
+```
+
+---
+
+## 7. When Does Context Switch Happen?
+
+```
+Three triggers:
+
+1. SCHEDULING (preemptive multitasking)
+   OS timer fires every ~1–10ms (time slice / quantum).
+   Current process's time is up → forced switch.
+   Prevents any one process monopolising the CPU.
+
+2. IO WAIT
+   Process requests disk/network IO.
+   Cannot continue until IO completes.
+   OS immediately switches to another process.
+   Don't waste CPU waiting for slow IO.
+   When IO completes → interrupt → process moved back to ready queue.
+
+3. VOLUNTARY YIELD
+   Process calls sleep(), wait(), or blocks on a mutex.
+   OS switches to something useful immediately.
+```
+
+---
+
+## 8. Preemptive Multitasking
+
+```
+Each process gets a TIME SLICE (quantum) on the CPU.
+Typically 1–10ms depending on OS and priority.
+
+Timeline:
+  Process A: |████████|          |████████|
+  Process B:          |████████|          |████|
+                      ↑         ↑
+                   switch    switch
+
+OS timer fires → interrupt → OS takes control → saves context →
+loads next process → resumes.
+
+Process A has no say. It is forcibly paused.
+This is PREEMPTIVE — OS can preempt any process at any time.
+
+Historical bug — Windows 3.1:
+  Windows 3.1 used COOPERATIVE multitasking (not preemptive).
+  Processes had to voluntarily yield the CPU.
+  If one process never yielded → all other processes starved.
+  Entire system froze until the hogging process finished.
+  Windows 95 fixed this with preemptive multitasking.
+```
+
+---
+
+## 9. Scheduling Algorithms
+
+```
+Scheduler decides: which process runs next and for how long.
+
+1. FIRST COME FIRST SERVE (FCFS)
+   Queue of processes. Run in arrival order.
+   Simple. Fair in theory.
+   Problem: one long process blocks everything behind it.
+   (Convoy effect)
+
+2. SHORTEST JOB FIRST (SJF)
+   Run the process with shortest estimated runtime first.
+   Optimal for minimising average wait time.
+   Problem: must predict runtime (hard). Long jobs starve.
+
+3. ROUND ROBIN
+   Each process gets a fixed time slice (quantum).
+   Rotate through all processes equally.
+   Most common in real OS (Linux CFS is based on this idea).
+   Quantum too short → too many context switches → overhead.
+   Quantum too long → feels unresponsive.
+   Linux default: ~4–15ms quantum.
+
+Key goal for scheduler:
+  Schedule threads of same process on same core.
+  → Shared TLB entries stay warm.
+  → Better cache locality (shared L1/L2).
+  → Fewer TLB misses.
+```
+
+---
+
+## 10. Context Switch Cost — Full Picture
+
+```
+Operation                          Cost
+──────────────────────────────────────────────────────
+Save registers to PCB              ~100ns (RAM write)
+Load registers from PCB            ~100ns (RAM read)
+TLB flush (process switch)         ~100 cycles
+TLB warmup (cold start)            ~1000+ cycles (many misses)
+Cache warmup (L1/L2 cold)          ~1000s of cycles
+Total process context switch       ~1–10 µs
+
+Thread context switch              ~200–500ns (no TLB flush)
+
+A server doing 10,000 context switches/second:
+  Process: 10,000 × 5µs = 50ms/s wasted (5% CPU on switching)
+  Thread:  10,000 × 0.3µs = 3ms/s wasted (0.3% CPU on switching)
+```
+
+---
+
+## 11. Summary Table
+
+```
+Concept               Key Point
+──────────────────────────────────────────────────────────────
+Context               Complete CPU state: PC, SP, PTBR, registers
+Context switch        Save current → load new → flush TLB
+PCB                   Where context is saved in memory
+TLB flush             Required on process switch, not thread switch
+ASID/PCID             Tag TLB entries with process ID → avoid flush
+Preemptive            OS forcibly switches via timer interrupt
+FCFS                  Simple queue, convoy problem
+SJF                   Optimal average wait, starvation risk
+Round Robin           Fair time slices, most practical
+Thread switch         Same page table → no TLB flush → cheaper
+```
+
+---
+
+## 12. One-Line Interview Answers
+
+**"What is a context switch?"**
+Saving the current process's CPU state (PC, registers, PTBR) to its PCB, loading the next process's state from its PCB into the CPU, and flushing the TLB — so the CPU can seamlessly resume a different process.
+
+**"Why is context switching expensive?"**
+Saving/loading registers is cheap — the real cost is the TLB flush which makes the new process start with cold TLB, causing hundreds of page table walks until the TLB warms up again.
+
+**"Why are thread context switches cheaper?"**
+Threads of the same process share the same page table, so no TLB flush is needed — TLB entries remain valid and the cache is still warm.
+
+**"What is ASID?"**
+Address Space Identifier — tags each TLB entry with a process ID so entries from multiple processes coexist in the TLB simultaneously, eliminating the need to flush on context switch.
+
+**"What is preemptive multitasking?"**
+The OS uses a timer interrupt to forcibly pause any process after its time slice expires, ensuring no single process can monopolise the CPU — unlike cooperative multitasking where processes must voluntarily yield.
+
+**"What is Round Robin scheduling?"**
+Each process gets a fixed time quantum on the CPU, then moves to the back of the queue — fair, simple, and used as the basis for most real OS schedulers including Linux CFS.

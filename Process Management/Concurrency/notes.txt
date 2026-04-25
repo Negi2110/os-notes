@@ -1,0 +1,359 @@
+# Concurrency — Master Notes
+
+---
+
+## 0. The Core Idea
+
+```
+One task split across multiple processes or threads
+running simultaneously to keep CPU busy
+and finish faster.
+
+CPU is expensive. Idle CPU = wasted money.
+Concurrency = keep it fed with work.
+```
+
+---
+
+## 1. CPU Bound vs IO Bound
+
+```
+CPU BOUND workload:
+  Mostly computing. Rarely waits for IO.
+  CPU is the bottleneck.
+  More cores = faster.
+
+  Examples:
+    Encryption / decryption
+    Video compression
+    DB query planning
+    Sorting large datasets
+    Protocol parsing (HTTP/2, QUIC)
+    Machine learning training
+
+IO BOUND workload:
+  Mostly waiting. CPU idle most of the time.
+  IO is the bottleneck (disk, network, DB).
+  More threads = better (hide wait time).
+
+  Examples:
+    Database queries (waiting for disk)
+    Network read/write
+    File reads/writes
+    API calls to external services
+
+Fix for CPU bound:  more cores, better algorithms, SIMD
+Fix for IO bound:   more threads, async IO, non-blocking
+```
+
+---
+
+## 2. Multi-Process vs Multi-Threaded
+
+```
+MULTI-PROCESS:
+  Spin multiple separate processes.
+  Each process = own virtual memory = fully isolated.
+  One crash → only that process dies.
+  Communication via IPC (pipes, sockets, shared memory).
+  Higher memory usage (each has own copy).
+  Higher context switch cost (TLB flush).
+
+  Examples: NGINX, PostgreSQL
+
+MULTI-THREADED:
+  Parent process creates multiple threads.
+  All threads share heap, code, data, file descriptors.
+  Own stack and PC per thread.
+  One crash → can kill entire process.
+  Communication via shared memory directly.
+  Lower memory usage, cheaper context switch.
+
+  Examples: MySQL, libuv (Node.js internals)
+
+Visual:
+  Multi-process:            Multi-threaded:
+  [P1]  [P2]                [P3]
+  separate                  [T1] [T2]
+  isolated                  shared memory
+```
+
+---
+
+## 3. The Concurrency Problem — Race Condition
+
+```
+Two threads. One shared variable. Both increment it.
+
+Initial state: a = 1
+
+Expected result: a = 3  (each thread does a++)
+
+What actually happens WITHOUT synchronisation:
+
+Thread 1 (T1):          Thread 2 (T2):
+  Read a = 1              Read a = 1    ← both read SAME value
+  a = a + 1 = 2           a = a + 1 = 2
+  Store a = 2             Store a = 2   ← both write 2
+
+Final result: a = 2 (WRONG. Should be 3.)
+
+Why it happened:
+  T1 read a=1 into its register.
+  T2 read a=1 into its register (before T1 wrote back).
+  Both incremented their private copy to 2.
+  Both wrote 2 to memory.
+  One increment lost. T1's work overwritten by T2.
+
+This is a RACE CONDITION.
+Result depends on timing. Non-deterministic. Hard to reproduce.
+```
+
+---
+
+## 4. Mutex — The Fix
+
+### What a Mutex Is
+
+```
+Mutex = Mutual Exclusion lock.
+Binary lock: either LOCKED or UNLOCKED.
+Only ONE thread holds it at a time.
+Other threads must WAIT until it is released.
+Serialises access to shared resource.
+```
+
+### Mutex — Step by Step Story
+
+```
+Initial: a = 1, Mutex M = unlocked
+
+Step 1 — T1 acquires mutex:
+  T1 calls lock(M).
+  M was free → T1 gets it. M now LOCKED.
+  T2 calls lock(M) → M is locked → T2 BLOCKS (waits).
+
+Step 2 — T1 does its work:
+  T1 reads a = 1  (from memory)
+  T1 computes a + 1 = 2  (in T1's register)
+  T1 writes a = 2  (to memory)
+  a is now 2 in memory.
+
+Step 3 — T1 releases mutex:
+  T1 calls unlock(M).
+  OS immediately unblocks T2.
+  OS context switches to T2.
+  T2 acquires M.
+
+Step 4 — T2 does its work:
+  T2 reads a = 2  (gets fresh value T1 wrote)
+  T2 computes a + 1 = 3
+  T2 writes a = 3
+  T2 releases M.
+
+Final result: a = 3. Correct.
+
+Timeline:
+  T1: [LOCK]→[read a=1]→[a=2]→[write 2]→[UNLOCK]
+  T2:         [waiting...................][LOCK]→[read a=2]→[a=3]→[write 3]→[UNLOCK]
+```
+
+### Mutex in C++
+
+```cpp
+#include <mutex>
+#include <thread>
+
+int a = 0;
+std::mutex m;
+
+void increment() {
+    m.lock();        // acquire — blocks if already locked
+    a++;             // critical section — only one thread here
+    m.unlock();      // release — next waiting thread unblocks
+}
+
+// Better — RAII, auto-unlocks even on exception:
+void increment_safe() {
+    std::lock_guard<std::mutex> lock(m);  // locks here
+    a++;
+}  // unlocks automatically when lock goes out of scope
+```
+
+---
+
+## 5. Mutex Gotchas
+
+```
+1. OWNERSHIP
+   Only the thread that LOCKED the mutex can UNLOCK it.
+   Thread A cannot unlock a mutex held by Thread B.
+   (Unlike semaphores — see below)
+
+2. THREAD TERMINATES WHILE HOLDING MUTEX
+   Thread crashes or exits without unlocking.
+   Mutex stays LOCKED forever.
+   All other threads waiting on it → stuck forever.
+   Fix: always use RAII (lock_guard, unique_lock) in C++.
+        Destructor unlocks automatically even on exception.
+
+3. DEADLOCK
+   T1 holds Mutex A, wants Mutex B.
+   T2 holds Mutex B, wants Mutex A.
+   Both wait forever. Neither can proceed.
+
+   Fix:
+     Always acquire mutexes in same ORDER everywhere.
+     T1 and T2 both: lock A first, then B → no deadlock.
+     Or use std::scoped_lock (locks multiple mutexes safely).
+
+4. PRIORITY INVERSION
+   High-priority thread waits for mutex held by low-priority thread.
+   Low-priority thread gets preempted by medium-priority threads.
+   High-priority thread starves.
+   Famous bug: Mars Pathfinder (1997) reset due to this.
+```
+
+---
+
+## 6. Semaphore — Generalised Mutex
+
+```
+Semaphore = counter-based synchronisation primitive.
+Mutex is binary (0 or 1).
+Semaphore is N (0 to N).
+
+Two operations (both atomic):
+  signal() / post()  → increment counter
+  wait()  / down()   → decrement counter
+                       BLOCKS if counter = 0
+
+Use cases:
+  Mutex behaviour:     semaphore initialised to 1
+  Limit concurrency:   semaphore initialised to N
+                       (e.g. max 5 threads in DB pool simultaneously)
+  Signalling:          one thread signals, another waits
+
+Key difference from mutex:
+  Mutex has OWNERSHIP (locker must unlock).
+  Semaphore has NO ownership.
+  ANY thread can signal/wait regardless of who decremented.
+  Useful for producer-consumer patterns.
+
+Example — connection pool (max 5 connections):
+  sem = 5
+
+  Thread wants connection:
+    wait(sem)   → if sem > 0, decrement and proceed
+                → if sem = 0, BLOCK until one freed
+
+  Thread done with connection:
+    signal(sem) → increment → unblocks a waiting thread
+```
+
+### Semaphore vs Mutex
+
+```
+Property          Mutex              Semaphore
+──────────────────────────────────────────────────
+Value             0 or 1             0 to N
+Ownership         Yes (locker=unlocker) No
+Use case          Mutual exclusion   Counting/signalling
+One holder        Always             Up to N simultaneous
+Cross-thread      No (same thread)   Yes (any thread can signal)
+```
+
+---
+
+## 7. Atomic Operations — No Lock Needed
+
+```
+Some operations are ATOMIC — hardware guarantees no race condition.
+No mutex needed. Much faster.
+
+CPU provides atomic instructions:
+  CAS  (Compare and Swap)
+  FETCH-AND-ADD
+  TEST-AND-SET
+
+In C++:
+  std::atomic<int> a = 0;
+  a++;           // atomic, no race condition, no mutex
+  a.fetch_add(1) // same
+
+When to use:
+  Simple counter increments.
+  Flags (bool ready = false → true).
+  Lock-free data structures.
+
+When NOT to use:
+  Complex multi-step operations.
+  If you need several variables to change together atomically
+  → need a mutex.
+```
+
+---
+
+## 8. Common Concurrency Patterns
+
+```
+1. PRODUCER-CONSUMER
+   Producer thread creates data → puts in queue.
+   Consumer thread takes from queue → processes.
+   Queue protected by mutex.
+   Semaphore signals consumer when data available.
+
+2. READER-WRITER LOCK
+   Multiple readers simultaneously → fine (no mutation).
+   One writer exclusively → no readers allowed.
+   std::shared_mutex in C++.
+   Database: reads can be concurrent, writes are exclusive.
+
+3. THREAD POOL
+   Fixed N threads created at startup.
+   Tasks submitted to queue.
+   Threads pick up tasks as they become free.
+   Avoids thread creation overhead per request.
+   Used in: web servers, databases, game engines.
+```
+
+---
+
+## 9. Summary Table
+
+```
+Concept           Key Point
+──────────────────────────────────────────────────────────
+CPU bound         Use more cores, SIMD, better algorithms
+IO bound          Use more threads, async IO, non-blocking
+Race condition    Two threads touch same data unsynchronised
+Mutex             Binary lock, only one thread at a time
+Deadlock          Two threads waiting on each other's locks
+Semaphore         Counter lock, any thread can signal/wait
+Atomic            Hardware-level lock-free for simple ops
+Thread pool       Reuse threads, avoid creation overhead
+Multi-process     Isolated, safe, expensive (NGINX, PG)
+Multi-threaded    Shared memory, cheap, risky (MySQL)
+```
+
+---
+
+## 10. One-Line Interview Answers
+
+**"What is a race condition?"**
+When two threads access shared data concurrently without synchronisation, and the result depends on the unpredictable order of execution — classically two threads both reading a value, incrementing, and writing back, losing one increment.
+
+**"What is a mutex?"**
+A binary lock that ensures only one thread executes a critical section at a time — the thread that locks it must unlock it, and any other thread trying to lock it blocks until released.
+
+**"What is deadlock?"**
+Two or more threads each holding a lock the other needs, waiting forever — fixed by always acquiring locks in the same global order or using scoped_lock for multiple locks simultaneously.
+
+**"What is a semaphore?"**
+A counter-based synchronisation primitive where wait() decrements (blocking at 0) and signal() increments — unlike a mutex, any thread can signal, making it suitable for producer-consumer and connection pool patterns.
+
+**"When would you use atomic instead of mutex?"**
+For simple independent operations like incrementing a counter or setting a flag — atomics use hardware instructions with no kernel involvement, making them much faster than a mutex for single-variable operations.
+
+**"What is the difference between multi-process and multi-threaded?"**
+Multi-process: isolated processes, each with own memory, crash-safe but expensive (NGINX, PostgreSQL). Multi-threaded: shared memory, cheap context switch, one crash can kill all, needs careful synchronisation (MySQL).
