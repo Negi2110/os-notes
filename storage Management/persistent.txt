@@ -1,0 +1,431 @@
+# Storage Management — Master Notes
+
+---
+
+## 0. Why Persistent Storage Exists
+
+```
+RAM is volatile → power off → all data gone.
+Need storage that survives power loss.
+
+Types of persistent storage:
+  Magnetic tape   → oldest, sequential, cheap, huge capacity
+  HDD             → magnetic platters, random access, slow
+  SSD             → NAND flash, fast, no moving parts
+  Flash/eMMC      → embedded flash (phones, cameras)
+```
+
+---
+
+## 1. HDD — Hard Disk Drive
+
+### Physical Structure
+
+```
+HDD is mechanical. Actual spinning physical parts.
+
+Components:
+  Platters   → spinning magnetic disks (multiple stacked)
+  Head       → reads/writes magnetic data, one per platter surface
+  Track      → circular ring on a platter surface
+  Cylinder   → same track number across all platters (vertical stack)
+  Sector     → smallest unit on a track (traditionally 512 bytes)
+  Cluster    → group of sectors (OS allocation unit)
+
+  Platter view:
+  ┌─────────────────────────────┐
+  │  ○ ○ ○ ○  (tracks)         │ ← head 1 reads top surface
+  │  ○ ○ ○ ○                   │
+  │  ─────────── (platters)     │ ← head 2 reads bottom surface
+  │  ○ ○ ○ ○                   │
+  └─────────────────────────────┘
+  Cylinder = same ring on all platters simultaneously
+```
+
+### CHS Addressing (old)
+
+```
+Old way: OS addressed disk using physical geometry.
+CHS = Cylinder / Head / Sector
+
+To access data:
+  1. Specify cylinder number (which ring)
+  2. Specify head number (which platter surface)
+  3. Specify sector number (which slice of the ring)
+
+Example: Cylinder yellow, Head 2, Sector C
+
+Problem:
+  OS must know physical disk layout.
+  Different disks = different geometry = different OS code.
+  Not abstracted. Not portable.
+```
+
+### LBA — Logical Block Addressing (modern)
+
+```
+New way: entire disk = flat array of numbered blocks.
+OS sees: blocks 1, 2, 3, 4, 5, 6, 7, 8...
+
+Disk controller handles translation:
+  LBA 3 → controller maps → Cylinder Y, Head 2, Sector C
+  OS doesn't know or care about physical geometry.
+  Disk can be improved internally without OS changes.
+
+LBAs:  [1][2][3][4][5][6][7][8]
+          ↓
+  Controller translates
+          ↓
+  Physical: Cylinder/Head/Sector
+
+Benefits:
+  OS is abstracted from hardware details.
+  Disk manufacturers can change internals freely.
+  Same OS works on any disk.
+
+Cost:
+  Extra translation layer in disk controller.
+  Tiny overhead but negligible.
+```
+
+### HDD Access Time
+
+```
+Seek time:     head moves to correct track    ~3–10ms
+Rotational:    disk rotates to correct sector ~0–5ms
+Transfer:      data read off platter          ~100MB/s
+
+Total typical: 5–10ms per random access
+That is 100,000× slower than RAM (50–100ns).
+Sequential reads are much faster (head stays in place).
+Random reads are the killer — mechanical movement takes time.
+```
+
+---
+
+## 2. SSD — Solid State Drive
+
+### Physical Structure
+
+```
+SSD has NO moving parts. Pure electronics.
+
+Built on NAND flash technology.
+
+Hierarchy:
+  Cell     → stores 1, 2, 3, or 4 bits (SLC/MLC/TLC/QLC)
+  Page     → group of cells, typically 4KiB or 16KiB
+             MINIMUM unit of READ and WRITE
+  Block    → group of pages, typically 128–512 pages
+             MINIMUM unit of ERASE
+  Die      → silicon chip containing many blocks
+  Package  → multiple dies
+
+Key constraint:
+  READ:   minimum unit = page (4KiB)
+  WRITE:  minimum unit = page (4KiB) — to a fresh/erased page
+  ERASE:  minimum unit = BLOCK (contains many pages)
+  You CANNOT erase a single page. Must erase whole block.
+  You CANNOT overwrite a page. Must erase block first.
+```
+
+### Flash Translation Layer (FTL)
+
+```
+SSD exposes LBA interface to OS (same as HDD).
+OS sees flat array of logical blocks.
+FTL (controller firmware) maps LBA → physical page.
+
+LBAs: [1][2][3][4][5][6][7][8]
+  LBA 1 → Physical Page A
+  LBA 7 → Physical Page G
+  etc.
+
+FTL handles:
+  Mapping table (LBA → physical page)
+  Wear leveling
+  Garbage collection
+  Write amplification management
+  Bad block management
+```
+
+---
+
+## 3. SSD Write — The Full Story
+
+### Step 1 — First Write
+
+```
+Write 4KiB to LBA 1.
+FTL finds a free physical page A.
+Maps LBA 1 → Physical Page A.
+Data written to page A.
+
+LBAs: [1][2][3][4][5][6][7][8]
+       ↓
+Block 1: [A][B][C][D]   ← A is written (LBA 1)
+Block 2: [E][F][G][H]
+```
+
+### Step 2 — Update (no overwrite possible)
+
+```
+Want to update LBA 1 with new content.
+CANNOT overwrite page A directly.
+SSD does NOT update in place.
+
+Instead:
+  Write new data to next free page B.
+  Update FTL mapping: LBA 1 → Physical Page B.
+  Mark page A as INVALID (stale, cannot be erased yet).
+
+LBAs: [1]
+       ↓ (now points to B)
+Block 1: [A(invalid)][B][C][D]
+
+Page A is marked invalid — it has stale data.
+Cannot be reused until the entire block is erased.
+```
+
+### Step 3 — More Updates, Block Fills Up
+
+```
+Continue updating LBA 1:
+  LBA 1 → C (B now invalid)
+  LBA 1 → D (C now invalid)
+  LBA 1 → E (D now invalid)
+  ...
+
+Eventually all pages in a block are invalid or used.
+Block is full of stale/invalid pages.
+Cannot write any more.
+
+Block 1: [A(inv)][B(inv)][C(inv)][D(inv)]  ← all invalid
+Block 2: [E(LBA1)][F(LBA6)][G(LBA7)][H(LBA8)]
+```
+
+### Step 4 — Garbage Collection
+
+```
+Need free space. Block 1 is all invalid → safe to erase.
+
+Garbage collection:
+  1. Find a block where ALL pages are invalid.
+  2. Erase the entire block.
+  3. Block is now fresh — all pages writable again.
+
+After erase:
+  Block 1: [_][_][_][_]  ← empty, ready to write
+
+LBA 1 now gets next free page in Block 1 (page A again).
+```
+
+---
+
+## 4. Write Amplification
+
+```
+Definition:
+  You wanted to write 4KiB (one page).
+  But SSD had to do much more work behind the scenes.
+
+Why it happens:
+  Wanted: write 1 page to LBA 1.
+  Reality:
+    Find free page → write data.
+    Old page marked invalid.
+    Block fills with invalids.
+    GC must erase block (erasing takes time + wears cells).
+    May need to move valid pages elsewhere before erase.
+
+Write Amplification Factor (WAF):
+  WAF = actual data written to flash / data written by host
+  WAF = 1   → perfect, no extra writes
+  WAF > 1   → more writes happened than requested
+  WAF = 3   → for every 1 byte you wrote, 3 bytes were actually written
+
+High WAF causes:
+  Slower write performance (more work per write).
+  Faster wear (more erase cycles consumed).
+  Reduced SSD lifespan.
+
+Databases and WAF:
+  Frequent small random writes → high WAF.
+  Sequential large writes → low WAF.
+  This is why databases use write-ahead logs (sequential)
+  instead of random in-place updates.
+```
+
+---
+
+## 5. Wear Leveling
+
+### The Problem
+
+```
+NAND cells have finite write endurance:
+  SLC (1 bit/cell): ~100,000 program/erase cycles
+  MLC (2 bit/cell): ~10,000 cycles
+  TLC (3 bit/cell): ~3,000 cycles
+  QLC (4 bit/cell): ~1,000 cycles
+
+Some pages are HOT (written constantly):
+  e.g. database log file, OS metadata
+Some pages are COLD (written once, never again):
+  e.g. your old photo, installed binary
+
+Without wear leveling:
+  Hot pages burn out in months.
+  Cold pages still brand new.
+  SSD dies unevenly — hot region fails while cold is fine.
+```
+
+### The Solution — Wear Leveling
+
+```
+FTL spreads writes evenly across ALL physical pages.
+Even cold data gets moved occasionally
+to give hot regions a rest.
+
+Two types:
+  Dynamic wear leveling:
+    New writes distributed across least-worn blocks.
+    Hot pages rotate around the SSD.
+
+  Static wear leveling:
+    Even COLD data is periodically relocated.
+    Frees up less-worn blocks for hot data.
+    More thorough. More write amplification.
+
+Goal: all cells reach end-of-life at the same time.
+```
+
+---
+
+## 6. Over-Provisioning (OP)
+
+```
+SSD advertises LESS capacity than it physically has.
+e.g. 1TB SSD might have 1.1TB of actual flash.
+Extra 10% = over-provisioned area (OP).
+
+OP space is invisible to OS and user.
+Used exclusively by FTL for:
+  Garbage collection staging area
+  Wear leveling operations
+  Bad block replacement
+
+How it helps — Wear Leveling + GC flow:
+
+Step 1: Hot pages E,F,G,H being written constantly.
+        Cold pages A,B,C,D sitting untouched.
+        A,B,C,D block wearing unevenly vs E,F,G,H block.
+
+Step 2: FTL moves cold pages A,B,C,D to OP area.
+        Now left block (A,B,C,D) is freed.
+
+Step 3: Erase the now-empty cold block.
+        Fresh erased block available for hot writes.
+
+Step 4: Hot pages E,F,G,H now redirect to fresh block.
+        Old hot block gets rest.
+
+Step 5: OP area has A,B,C,D.
+        OS still reads LBA mappings for A,B,C,D correctly
+        (FTL updated mapping to OP location).
+
+More OP → better GC performance → lower write amplification → longer life.
+Typical OP: 7% (consumer), 28% (enterprise).
+```
+
+---
+
+## 7. LBA / Page Size Mismatch
+
+```
+Problem: LBA size and physical page size don't have to match.
+
+Example:
+  OS LBA size = 4KiB
+  SSD physical page = 8KiB
+
+  LBA 1 maps to first half of physical page A (address 0).
+  LBA 2 maps to second half of physical page A (address 4000).
+
+  Both LBAs share the SAME physical page.
+
+Why this causes issues:
+  OS wants to update LBA 1.
+  Must rewrite entire 8KiB page (can't write half a page).
+  Read old page → modify → write to new page.
+  LBA 2 (unchanged) gets copied too.
+  Extra read + extra write for something OS didn't ask for.
+  = Read-Modify-Write penalty.
+  = More write amplification.
+
+Fix:
+  Align OS block size to SSD page size.
+  Format disk with correct sector size (4KiB or 8KiB).
+  Database page size = SSD page size (PostgreSQL: 8KiB default).
+```
+
+---
+
+## 8. SSD vs HDD — Side by Side
+
+```
+Property          HDD                     SSD
+──────────────────────────────────────────────────────────
+Technology        Magnetic platters       NAND flash
+Moving parts      Yes (head, platters)    No
+Random read       5–10ms                  50–100µs
+Sequential read   100–200MB/s             500–7000MB/s
+Write behaviour   Overwrite in place      No overwrite, erase block
+Wear              No write limit          Cell endurance limit
+Fragmentation     Matters (seek time)     Doesn't matter (no seek)
+Capacity          Up to 20TB+ cheap       Up to 8TB (more expensive)
+Noise             Yes (mechanical)        Silent
+Power             More                    Less
+Failure mode      Head crash, motor       Cell wear-out, controller
+```
+
+---
+
+## 9. Summary Table — Key Concepts
+
+```
+Concept              Definition
+────────────────────────────────────────────────────────────
+CHS                  Old addressing: Cylinder/Head/Sector — physical geometry
+LBA                  New addressing: flat block array, controller translates
+FTL                  Firmware mapping LBA → physical page, handles GC/WL
+Page                 Minimum read/write unit on SSD (4KiB or 16KiB)
+Block                Minimum erase unit on SSD (128–512 pages)
+Garbage collection   Erase blocks full of invalid pages to reclaim space
+Write amplification  More physical writes than logical writes requested
+Wear leveling        Distribute writes evenly to maximise SSD lifespan
+Over-provisioning    Hidden extra flash for GC and wear leveling operations
+Read-modify-write    LBA/page mismatch forces read old + modify + write new
+```
+
+---
+
+## 10. One-Line Interview Answers
+
+**"Why can't you overwrite data on an SSD?"**
+NAND flash cells can only be written to a clean (erased) state — you can't flip bits back individually. You must erase an entire block before rewriting, making in-place updates impossible.
+
+**"What is write amplification?"**
+When a small write request causes much larger actual flash writes due to garbage collection, read-modify-write, and wear leveling — a WAF of 3 means 3 bytes written to flash per 1 byte the OS requested.
+
+**"What is garbage collection on an SSD?"**
+When a block is full of invalid (stale) pages, the FTL erases the entire block to reclaim it — first moving any still-valid pages elsewhere, then erasing, making the block writable again.
+
+**"What is wear leveling?"**
+The FTL distributes writes evenly across all NAND cells so no single region wears out prematurely — including periodically relocating cold data to give frequently written regions a rest.
+
+**"What is over-provisioning?"**
+Extra flash capacity hidden from the OS, reserved for the FTL to use as staging area for garbage collection and wear leveling — more OP means lower write amplification and longer drive life.
+
+**"What is LBA?"**
+Logical Block Addressing — abstracts the disk as a flat numbered array of blocks so the OS doesn't need to know physical geometry; the disk controller handles the translation to actual physical locations.

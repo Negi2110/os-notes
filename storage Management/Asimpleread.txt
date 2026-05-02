@@ -1,0 +1,284 @@
+# A Simple Read — Master Notes
+
+---
+
+## 0. The Setup — What We're Reading
+
+```
+File: test.dat
+Size: 5000 bytes
+
+System configuration:
+  Logical sector size  (LBA)  = 4096 bytes
+  Physical sector size (PBA)  = 4096 bytes
+  OS page size                = 4096 bytes
+  File system block size      = 4096 bytes
+  1 FS block = 1 LBA (all sizes match perfectly)
+
+5000 bytes needs:
+  Block 1: 4096 bytes (full block)
+  Block 2: 904 bytes  (partial block, still occupies full 4096)
+  Total: 2 blocks allocated on disk.
+
+File metadata says:
+  Name: test.dat
+  Start block: 6
+  FAT: block 6 → block 3 → end of chain
+
+So file spans FS blocks: 6, 3
+```
+
+---
+
+## 1. POSIX API — What the User Calls
+
+```c
+#include <unistd.h>
+
+// Open file
+int fd = open("test.dat", O_RDONLY);
+
+// Read: returns bytes read, fills buf
+ssize_t read(int fd, void *buf, size_t count);
+
+// Write: returns bytes written
+ssize_t write(int fd, const void *buf, size_t count);
+
+// Flush to disk (durability)
+int fsync(int fd);      // flush data + metadata
+int fdatasync(int fd);  // flush data only (faster)
+```
+
+---
+
+## 2. Full Read Walk-Through — Every Layer
+
+### Step 1 — User calls read()
+
+```
+User process:
+  fd = open("test.dat", O_RDONLY)
+  read(fd, buf, 5000)
+
+Process blocks here. Control passes to OS kernel.
+OS takes over.
+```
+
+### Step 2 — OS reads file system metadata
+
+```
+OS looks up fd → finds file descriptor entry → finds inode/FAT entry.
+Reads FAT/inode to find which blocks hold this file.
+
+FAT lookup:
+  Start at block 6.
+  FAT[6] = 3  → next block is 3.
+  FAT[3] = E  → end of chain.
+
+File spans: Block 6, Block 3.
+OS knows it needs to read both.
+```
+
+### Step 3 — Check page cache for each block
+
+```
+OS checks page cache before touching disk.
+
+Page cache state (example):
+  Block 1 → VM page x  (cached)
+  Block 2 → VM page y  (cached)
+  Block 3 → VM page z  (cached)  ← test.dat's second block
+  Block 6 → NOT cached            ← test.dat's first block
+
+Result:
+  Block 3 → cache HIT  → no disk read needed
+  Block 6 → cache MISS → must go to disk
+```
+
+### Step 4 — Read block 6 from disk
+
+```
+Block 6 not in cache.
+OS sends read command to disk controller.
+
+Translation:
+  FS block 6 → LBA 6  (since 1 block = 1 LBA in this example)
+  OS sends: "read LBA 6, length 1 sector"
+
+Disk controller:
+  Receives LBA 6.
+  Translates LBA 6 → PBA (internal FTL mapping).
+  Reads physical page from NAND flash.
+  Returns 4096 bytes to OS via DMA.
+
+Cost: ~50–100µs (SSD) or ~5–10ms (HDD).
+```
+
+### Step 5 — OS updates page cache
+
+```
+OS receives 4096 bytes for block 6.
+Stores in page cache:
+  Block 6 → VM page j  (newly cached)
+
+Page cache now:
+  Block 1 → x
+  Block 2 → y
+  Block 3 → z  ← test.dat block 2 (was already cached)
+  Block 6 → j  ← test.dat block 1 (just fetched)
+```
+
+### Step 6 — OS returns data to user
+
+```
+OS has both blocks in page cache:
+  Block 6 → VM page j  (4096 bytes, first part of file)
+  Block 3 → VM page z  (4096 bytes, second part of file)
+
+User asked for 5000 bytes:
+  Copy all 4096 bytes from page j → user buffer
+  Copy 904 bytes from page z → user buffer (only what's needed)
+  Total copied: 4096 + 904 = 5000 bytes ✓
+
+OS unblocks user process.
+read() returns 5000.
+User process resumes.
+
+Note: page z has 4096 bytes but user only gets 904.
+      Remaining 3192 bytes stay in page cache, unused for this read.
+      Next read to block 3 → cache hit → instant.
+```
+
+---
+
+## 3. Full Flow Diagram
+
+```
+User:  read(fd, buf, 5000)
+         ↓
+OS:    Look up fd → get file path
+         ↓
+OS:    Read FAT/inode → blocks 6, 3
+         ↓
+OS:    Check page cache
+         ├── Block 3 → HIT  → skip to copy step
+         └── Block 6 → MISS → go to disk
+                ↓
+OS:    Translate block 6 → LBA 6
+         ↓
+OS:    Send read(LBA 6, length=1) to disk controller
+         ↓
+Disk:  LBA 6 → PBA (FTL translates)
+         ↓
+Disk:  DMA transfer 4096 bytes → kernel buffer
+         ↓
+OS:    Store block 6 in page cache → VM page j
+         ↓
+OS:    Copy page j (4096B) + page z (904B) → user buf
+         ↓
+OS:    Unblock process, return 5000
+         ↓
+User:  read() returns, buf has 5000 bytes of test.dat
+```
+
+---
+
+## 4. All the Layers — Translation Chain
+
+```
+User says:           "read 5000 bytes from test.dat"
+         ↓
+POSIX:               read(fd, buf, 5000)
+         ↓
+VFS:                 look up inode/FAT → blocks 6, 3
+         ↓
+Page cache:          block 3 hit, block 6 miss
+         ↓
+FS layer:            block 6 → LBA 6
+         ↓
+Block layer:         LBA 6, length 1
+         ↓
+Disk controller:     LBA 6 → PBA (FTL)
+         ↓
+NAND flash:          read physical page
+         ↓
+DMA:                 physical bytes → kernel buffer
+         ↓
+Page cache:          store block 6
+         ↓
+Copy:                page cache → user buffer
+         ↓
+User:                5000 bytes in buf
+
+Every layer adds indirection but enables:
+  Caching (page cache)
+  Abstraction (LBA hides PBA)
+  Portability (POSIX hides everything below)
+```
+
+---
+
+## 5. Key Numbers for This Example
+
+```
+What                        Size / Value
+──────────────────────────────────────────
+File size                   5000 bytes
+FS block size               4096 bytes
+LBA size                    4096 bytes
+PBA size                    4096 bytes
+OS page size                4096 bytes
+Blocks needed               2  (block 6 = 4096B, block 3 = 904B used)
+Internal fragmentation      3192 bytes wasted in block 3
+Disk reads                  1  (block 6 only, block 3 was cached)
+Cache copies                1  (page cache → user buffer)
+Total data read from disk   4096 bytes (one LBA, even though 904 needed)
+Data returned to user       5000 bytes
+```
+
+---
+
+## 6. Why the Extra Complexity is Worth It
+
+```
+Without page cache:
+  Every read → disk → 50–100µs minimum.
+  Read same file 1000 times → 1000 disk reads.
+
+With page cache:
+  First read → disk (miss) → cache populated.
+  Next 999 reads → cache hit → ~1ns (RAM speed).
+  1000× faster for repeated reads.
+
+Without LBA abstraction:
+  OS must know: "this is a Samsung 870 EVO, sector geometry is X."
+  Different code for every disk model.
+  With LBA: one interface. Disk handles the rest.
+
+Without FS block abstraction:
+  User must track: "my file is at LBAs 6, 23, 47, 102..."
+  Manual fragmentation management.
+  With FS: user just opens "test.dat". FS tracks everything.
+
+Layers exist to make complexity manageable.
+Each layer has a clear contract with the layer below and above.
+```
+
+---
+
+## 7. One-Line Interview Answers
+
+**"Walk me through what happens when you read a file."**
+OS looks up the file's inode/FAT to find which FS blocks contain the data, checks the page cache for each block, fetches any missing blocks from disk (translating FS block → LBA → PBA via the disk controller), updates the page cache, then copies the requested bytes from cache to the user buffer.
+
+**"What is the page cache?"**
+OS-managed RAM that caches recently read/written disk blocks — read hits return data in nanoseconds without touching disk, writes go to cache first and flush to disk later (or on fsync).
+
+**"Why does reading 904 bytes from disk fetch 4096?"**
+The minimum IO unit is one LBA/FS block (4096 bytes) — the disk controller can't read less than a full sector. The extra bytes are stored in the page cache and serve future reads to the same block for free.
+
+**"What is internal fragmentation in a file system?"**
+When a file's last block is only partially used — a 904-byte remainder still occupies a full 4096-byte FS block, wasting 3192 bytes that no other file can use.
+
+**"What does fsync() actually do?"**
+Forces the OS to write all dirty page cache pages for a file to disk and waits for the disk to confirm — ensuring data is durable before returning, critical for database transaction commits.

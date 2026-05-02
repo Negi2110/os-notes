@@ -1,0 +1,481 @@
+# File Systems — Master Notes
+
+---
+
+## 0. The Core Idea
+
+```
+Storage speaks in BLOCKS (LBAs).
+Humans speak in FILES and DIRECTORIES.
+
+File system = the translation layer between the two.
+
+User → [File System (OS)] → [LBA blocks] → [Physical Storage]
+
+Without a file system:
+  You'd have to track which LBA numbers hold your data.
+  Manually. For every file. Forever.
+  Impossible at scale.
+```
+
+---
+
+## 1. What a File System Does
+
+```
+Abstractions it provides:
+  Files       → named containers of data
+  Directories → named containers of files
+  Permissions → who can read/write/execute
+  Metadata    → size, timestamps, owner
+
+Under the hood:
+  Every file = one or more disk blocks (LBAs).
+  File system tracks which blocks belong to which file.
+  Reading a file = looking up blocks → reading them in order.
+  Writing a file = allocating new blocks → writing data → updating map.
+
+Promotes caching:
+  Frequently accessed blocks kept in RAM (OS page cache).
+  Disk only touched when cache misses.
+```
+
+### Common File Systems
+
+```
+FAT16/FAT32   → Windows legacy, USB drives, SD cards
+NTFS          → Windows modern, journaling, permissions
+APFS          → Apple (macOS/iOS), snapshots, encryption
+EXT4          → Linux default, journaling, widely used
+XFS           → Linux high-performance, parallel IO, Kafka uses it
+btrfs         → Linux modern, snapshots, checksums, RAID
+```
+
+---
+
+## 2. Terminology — Three Layers of Blocks
+
+```
+PBA  Physical Block Address
+     Internal to the drive.
+     The actual physical location on disk.
+     SSD page/block. HDD cylinder/head/sector.
+     OS never sees this directly.
+
+LBA  Logical Block Address
+     What the disk exposes to the OS.
+     Flat array of numbered sectors.
+     Disk controller translates LBA → PBA.
+     Traditional LBA size = 512 bytes.
+     Modern = 4096 bytes (Advanced Format).
+
+FS Block  File System Block
+     What the file system uses as its minimum unit.
+     1 FS block = 1 or more LBAs.
+     Typical: 4096 bytes (4KiB).
+     Set when you format the partition.
+
+Relationship:
+  1 PBA → 1 or more LBAs  (controller internal)
+  1 FS Block → 1 or more LBAs  (e.g. 8 LBAs if LBA=512B, FS block=4KiB)
+
+Example:
+  FS block 1 → LBA 1, LBA 2, LBA 3, LBA 4
+  FS block 2 → LBA 5, LBA 6, LBA 7, LBA 8
+```
+
+---
+
+## 3. FAT32 — File Allocation Table
+
+### Core Idea
+
+```
+FAT = array of 32-bit integers.
+Index = LBA (or cluster) number.
+Value = next LBA in the chain (linked list).
+
+To store a file:
+  Record the starting LBA.
+  Each entry points to the next LBA in the file.
+  Last entry = end-of-chain marker.
+
+Example — test.txt starts at LBA 6:
+
+LBA:   [0][1][2][3][4][5][6][7]
+FAT:   [-][-][3][E][-][-][2][-]
+
+Reading test.txt:
+  Start at LBA 6 → FAT[6] = 2 → go to LBA 2
+  LBA 2 → FAT[2] = 3 → go to LBA 3
+  LBA 3 → FAT[3] = E (end) → done
+
+File spans LBAs: 6, 2, 3
+```
+
+### The 128GB Limit Problem
+
+```
+FAT32 uses 32-bit entries.
+But 4 bits reserved (end-of-chain, dirty, free, other flags).
+Effective bits = 28.
+
+With LBA = 512 bytes:
+  2^28 × 512 bytes = 128 GB maximum volume size.
+  Very limiting for modern drives.
+
+Solution = CLUSTERING.
+```
+
+### Clustering
+
+```
+Cluster = logical grouping of LBAs.
+FAT table now indexes CLUSTERS not individual LBAs.
+
+Example:
+  LBA size = 512 bytes
+  8 LBAs = 1 cluster = 4KiB
+  Cluster 0 → LBAs 0–7
+  Cluster 1 → LBAs 8–15
+  Cluster N → LBAs (N×8) to (N×8+7)
+
+Addressable space:
+  2^28 clusters × 4KiB = 1TB addressable.
+  Much better.
+
+Trade-off:
+  Larger cluster = more addressable space.
+  But larger cluster = more internal fragmentation.
+  File using 1 byte still occupies entire cluster.
+  e.g. 4KiB cluster, 1-byte file → 4095 bytes wasted.
+
+File system reads:
+  File starts at cluster 6.
+  FAT[6] = 3 → go to cluster 3 → end of chain.
+  Convert clusters to LBAs:
+    Cluster 6 → LBAs 48–55
+    Cluster 3 → LBAs 24–31
+```
+
+---
+
+## 4. OS Page Cache
+
+### What It Is
+
+```
+File system blocks read from disk are cached in RAM.
+OS maintains a PAGE CACHE (also called buffer cache).
+
+FS block number → cached in a virtual memory page.
+FS block size ≤ OS virtual memory page size (often equal at 4KiB).
+
+Purpose:
+  Avoid going to disk on every read.
+  Batch writes before flushing to disk.
+  Shared between processes (two apps reading same file = one disk read).
+```
+
+### Cached Read (hit)
+
+```
+User wants to read block 3.
+OS checks page cache → block 3 IS cached.
+Content copied directly from page cache to user buffer.
+No disk access. Fast.
+
+User → [read block 3] → Page Cache (hit) → return data
+                         Disk (not touched)
+```
+
+### Cache Miss Read
+
+```
+User wants to read block 7.
+OS checks page cache → block 7 NOT cached.
+OS translates block 7 → LBAs.
+  Block 7 = LBAs (7 × 8) to (7 × 8 + 7) = LBAs 56–63.
+OS reads LBAs 56–63 from disk.
+Stores result in page cache.
+Returns data to user.
+
+User → [read block 7] → Page Cache (miss) → Disk (read LBAs 56–63)
+                      ← update cache      ←
+                      ← return data
+```
+
+### Write (buffered)
+
+```
+User wants to write block 7.
+OS writes to PAGE CACHE only (fast, RAM write).
+Returns success to user immediately.
+Data is NOT on disk yet.
+
+Later OS flushes dirty cache pages to disk:
+  Periodically (every 30s by default on Linux).
+  When memory pressure forces it.
+  When fsync() is called explicitly.
+  When file is closed (sometimes).
+
+User → [write block 7] → Page Cache (buffered write)
+                         Disk (written later, asynchronously)
+```
+
+### The Danger — Crash Between Write and Flush
+
+```
+Write goes to page cache → success returned to user.
+OS crashes before flushing to disk.
+Data is LOST.
+
+This is why databases call fsync():
+  fsync() forces OS to flush all dirty pages for that file to disk.
+  Blocks until disk confirms write.
+  Only then is the transaction truly durable.
+
+PostgreSQL: calls fsync() after each WAL write.
+MySQL InnoDB: innodb_flush_method controls this.
+```
+
+### Too Many fsync() — The Firefox Bug
+
+```
+Firefox 3 called fsync() 8 times per page load.
+Each fsync() = wait for all pending IO to flush.
+During heavy IO elsewhere → Firefox froze.
+System became unresponsive until all fsync() completed.
+
+Lesson:
+  fsync() is necessary for durability.
+  But calling it too often blocks the process.
+  Must balance durability vs performance.
+  Databases group commits to minimise fsync() calls.
+```
+
+### Page Cache Woes
+
+```
+Problem 1: Two apps sharing cached file
+  App A reads file → cached.
+  App B reads same file → gets cached version (faster, shared).
+  This is GOOD for reads.
+
+Problem 2: Corruption on crash
+  Write goes to cache.
+  OS crashes before flush.
+  File on disk has old data.
+  File in cache had new data — now lost.
+
+Problem 3: Torn database pages
+  Database writes 8KiB page.
+  OS flushes first 4KiB → crash.
+  Disk has half old, half new = TORN PAGE.
+  Database corruption.
+  Fix: WAL (write-ahead log) + checksums detect this.
+```
+
+---
+
+## 5. File Modes
+
+```
+When opening a file, flags control behaviour:
+
+O_APPEND
+  All writes go to end of file atomically.
+  Multiple processes can append safely without race conditions.
+  e.g. log files written by multiple workers.
+
+O_DIRECT
+  Bypass page cache entirely.
+  Data goes directly: user buffer → disk (via DMA).
+  No caching. No buffering.
+  Used by databases with their own buffer pool.
+  (PostgreSQL, MySQL — manage their own caching.)
+  Requires aligned buffers (usually 4KiB aligned).
+
+O_SYNC
+  Every write immediately flushes to disk before returning.
+  Equivalent to write() + fsync() on every call.
+  Very slow. Used when durability is critical.
+  Never buffer. Never risk data loss.
+```
+
+### PostgreSQL WAL Sync Methods
+
+```
+wal_sync_method controls how WAL is flushed to disk:
+
+open_datasync    → write WAL with O_DSYNC flag
+fdatasync        → call fdatasync() at each commit (default Linux)
+fsync            → call fsync() at each commit
+fsync_writethrough → fsync() + force write cache flush
+open_sync        → write WAL with O_SYNC flag
+
+MySQL InnoDB equivalent:
+  innodb_flush_method:
+    fsync        → default
+    O_DSYNC      → write + sync
+    littlesync   → less strict
+    nosync       → dangerous, no sync
+    O_DIRECT     → bypass page cache
+    O_DIRECT_NO_FSYNC → bypass + no fsync
+```
+
+---
+
+## 6. Partitions
+
+### What Partitions Are
+
+```
+Disk = flat array of LBAs (e.g. LBA 1 to LBA 1,000,000).
+Partition = a contiguous range of LBAs treated as a unit.
+
+Example:
+  P1 → LBA 1–4      (small, maybe boot partition)
+  P2 → LBA 5–13     (large, main data)
+  P3 → LBA 14–16    (small, swap)
+
+Each partition:
+  Gets its own file system (can be different FS per partition).
+  Gets its own FS block size.
+  Appears as separate device to OS (/dev/sda1, /dev/sda2).
+
+Benefits:
+  Isolate OS from data (reinstall OS without losing data).
+  Different FS optimised for different use cases.
+  Limit how much space one FS can consume.
+```
+
+### Partition Alignment
+
+```
+Critical for performance.
+
+Problem:
+  LBA size = 512 bytes.
+  PBA (physical sector) = 4096 bytes (8 LBAs per PBA).
+  FS block = 4096 bytes (also 8 LBAs).
+
+  Partition starts at LBA 2 (misaligned):
+    FS block 1 = LBAs 2–9
+    LBAs 2–7 → PBA 1
+    LBAs 8–9 → PBA 2
+    One FS block spans TWO physical sectors!
+
+  To read FS block 1:
+    Read PBA 1 + Read PBA 2 = 2 physical reads for 1 logical block.
+    2× IO overhead.
+
+  Partition starts at LBA 0 or LBA 8 (aligned):
+    FS block 1 = LBAs 0–7 → exactly PBA 1.
+    One FS block = one physical read.
+
+Fix: always start partitions at LBA aligned to physical sector size.
+Modern tools (fdisk, parted) do this automatically (align to 1MB = 2048 LBAs).
+```
+
+---
+
+## 7. Moving File Systems — Real Example
+
+```
+Allegro (large e-commerce, runs Kafka) moved from ext4 to XFS.
+
+Why:
+  ext4 journal commits have high latency spikes.
+  Every metadata update → journal write → fsync.
+  Under high Kafka write load → journal becomes bottleneck.
+  Latency spikes visible in produce latency graphs.
+
+XFS advantages for Kafka:
+  Better parallel IO (multiple allocation groups).
+  Less journaling overhead for append-heavy workloads.
+  Better handling of large files and many small files.
+  Delayed allocation reduces fragmentation.
+
+Result:
+  Kafka produce latency dramatically smoother on XFS.
+  Latency spikes essentially eliminated.
+
+Lesson:
+  File system choice matters for performance-critical workloads.
+  ext4 is general purpose. XFS excels at high-throughput IO.
+  Always benchmark before production migration.
+```
+
+---
+
+## 8. Full Read Path — Everything Together
+
+```
+User calls: read("test.txt", buffer, 4096)
+
+1. OS looks up file "test.txt" in directory.
+   Gets inode/FAT entry → starting block number.
+
+2. OS translates block number → LBAs.
+   e.g. Block 7 = LBAs 56–63.
+
+3. OS checks PAGE CACHE.
+   Block 7 cached? → copy to user buffer → done.
+   Not cached? → go to step 4.
+
+4. OS sends read request to disk.
+   DMA transfers LBAs 56–63 from disk to kernel buffer.
+   ~50–100µs for SSD, ~5–10ms for HDD.
+
+5. OS stores result in page cache.
+   Maps FS block 7 → virtual memory page.
+
+6. OS copies from page cache → user buffer.
+   Returns bytes read to user.
+```
+
+---
+
+## 9. Summary Table
+
+```
+Concept           Definition
+──────────────────────────────────────────────────────────────
+File system       Abstraction: files/dirs on top of block storage
+PBA               Physical Block Address — internal to drive
+LBA               Logical Block Address — exposed to OS (512B or 4KiB)
+FS block          File system's allocation unit (1 or more LBAs)
+FAT32             Linked-list block map via 32-bit integer array
+Cluster           Group of LBAs, FAT32 indexes clusters not LBAs
+Page cache        OS RAM cache of disk blocks, speeds up reads/writes
+fsync()           Force flush dirty page cache pages to disk
+O_DIRECT          Bypass page cache entirely (databases use this)
+O_SYNC            Every write immediately syncs to disk
+Partition         Contiguous LBA range with its own file system
+Partition align   Start partition at LBA multiple of physical sector
+Torn page         Partial write of multi-sector structure during crash
+Write amplification More physical writes than logical writes requested
+```
+
+---
+
+## 10. One-Line Interview Answers
+
+**"What is a file system?"**
+An abstraction layer that translates human concepts (files, directories) to disk concepts (blocks/LBAs), tracking which blocks belong to which file and managing allocation, caching, and metadata.
+
+**"What is the OS page cache?"**
+RAM cache of recently read/written disk blocks — reads check cache first (avoiding disk), writes go to cache first (returning immediately) and are flushed to disk later or on fsync().
+
+**"What is fsync()?"**
+A system call that forces the OS to flush all dirty page cache pages for a file to disk, blocking until the disk confirms the write — essential for database durability guarantees.
+
+**"What is O_DIRECT?"**
+A file open flag that bypasses the OS page cache, sending data directly between user buffers and disk via DMA — used by databases with their own buffer pool to avoid double caching.
+
+**"What is a torn page?"**
+When a multi-block write is partially completed before a crash — some sectors have new data, others have old — causing data structure corruption. Prevented by write-ahead logging and checksums.
+
+**"What is partition alignment?"**
+Starting a partition at an LBA that is a multiple of the physical sector size — misalignment causes one FS block to span two physical sectors, requiring 2 physical reads for every 1 logical read.
