@@ -1,0 +1,380 @@
+# Network Fundamentals & Socket Management — Master Notes
+
+---
+
+## 0. Why Networking Exists
+
+```
+Early computers: one machine, one user, one program.
+Problem: machines are expensive. Not everyone can have one.
+
+Solution: Client-Server architecture.
+  Split the application into two parts.
+  Server: expensive hardware, does the heavy work.
+  Client: cheap hardware, sends requests, shows results.
+
+This gave birth to RPC (Remote Procedure Call).
+  Client calls a function → it runs on the server.
+  Result comes back over the network.
+  Client doesn't know or care where it ran.
+```
+
+---
+
+## 1. Client-Server Architecture
+
+```
+Benefits:
+  Server has beefy hardware     → expensive compute centralised
+  Client has commodity hardware → cheap phones/laptops work fine
+  Client needs no dependencies  → logic lives on server
+  Clients do lightweight tasks  → display, input, basic logic only
+
+Problem it creates:
+  Client and server must communicate.
+  Need a standard communication model.
+  Otherwise every app reinvents its own protocol.
+  → OSI Model was born to solve this.
+```
+
+---
+
+## 2. Why We Need a Communication Model
+
+```
+Without a standard model:
+  Your app must know if it's running on WiFi, Ethernet, LTE, fiber.
+  You'd write different code for each physical medium.
+  Upgrading network hardware would break applications.
+  Innovations in one layer would require changes everywhere.
+
+With a standard model (OSI):
+  App talks to the model. Model talks to the hardware.
+  App doesn't know or care what's underneath.
+  You can swap WiFi for fiber → app still works.
+  Each layer can be improved independently.
+  Innovations in one layer don't affect others.
+```
+
+---
+
+## 3. The OSI Model — 7 Layers
+
+```
+Layer 7  Application   HTTP, FTP, gRPC, DNS, SMTP
+Layer 6  Presentation  Encoding, serialisation, encryption (TLS at this level conceptually)
+Layer 5  Session       Connection establishment, session management
+Layer 4  Transport     UDP, TCP — ports, segmentation, reliability
+Layer 3  Network       IP — routing between networks
+Layer 2  Data Link     Ethernet frames, MAC addresses
+Layer 1  Physical      Electric signals, fiber light, radio waves
+
+Memory aid (top to bottom): All People Seem To Need Data Processing
+```
+
+### Each Layer's Unit of Data
+
+```
+Layer 4  Transport  → Segment
+Layer 3  Network    → Packet
+Layer 2  Data Link  → Frame
+Layer 1  Physical   → Bits (electric/light/radio signals)
+```
+
+---
+
+## 4. OSI Example — Sending an HTTPS POST Request
+
+### Sender (Client) — Going DOWN the layers
+
+```
+Layer 7 — Application:
+  User code sends: POST /api/data with JSON body.
+  HTTP protocol formats the request.
+
+Layer 6 — Presentation:
+  Serialise JSON → flat byte string.
+  TLS encryption happens here (conceptually).
+
+Layer 5 — Session:
+  Establish TCP connection / TLS handshake.
+  Session identified and maintained.
+
+Layer 4 — Transport:
+  TCP takes the data.
+  Sends SYN packet to target port 443.
+  Breaks data into segments.
+  Each segment gets source + destination PORT.
+
+Layer 3 — Network:
+  Each segment wrapped in an IP packet.
+  Source IP + destination IP added.
+  Router decides where to send it.
+
+Layer 2 — Data Link:
+  Each packet wrapped in an Ethernet frame.
+  Source MAC + destination MAC added.
+  Frame sent to next hop (router/switch).
+
+Layer 1 — Physical:
+  Frame converted to bits → electric signal (Ethernet),
+  light pulses (fiber), or radio waves (WiFi).
+  Travels across the physical medium.
+```
+
+### Receiver (Server) — Going UP the layers
+
+```
+Layer 1 — Physical:
+  Radio/electric/light received → converted to digital bits.
+
+Layer 2 — Data Link:
+  Bits assembled into frames.
+  MAC address checked → is this for me?
+
+Layer 3 — Network:
+  Frames assembled into IP packets.
+  IP address checked → is this for me?
+
+Layer 4 — Transport:
+  IP packets assembled into TCP segments.
+  Deals with flow control, retransmission, ordering.
+  If SYN → three-way handshake handled here.
+  Port number extracted → which app gets this?
+
+Layer 5 — Session:
+  Session established or identified.
+  Only arrive here after handshake complete.
+
+Layer 6 — Presentation:
+  Deserialise flat bytes → JSON for the app.
+
+Layer 7 — Application:
+  Express/nginx/your app receives the POST request.
+  Event triggered. Handler runs.
+```
+
+---
+
+## 5. Network Devices and Which Layers They Use
+
+```
+Device         Layers used     What it does
+─────────────────────────────────────────────────────────
+Switch         L1, L2          Forwards frames by MAC within same network
+Router         L1, L2, L3      Routes packets by IP between networks
+Firewall (L4)  L1–L4           Filters by IP + port
+Load Balancer  L1–L4           Distributes TCP connections by IP + port
+L7 Load Bal.   L1–L7           Reads HTTP — routes by URL, header, cookie
+CDN            L1–L7           Caches content at edge, full HTTP awareness
+
+Key insight:
+  Switch doesn't know about IP. It only knows MAC.
+  Router doesn't know about TCP. It only knows IP.
+  L7 load balancer reads your HTTP headers. Full stack.
+```
+
+---
+
+## 6. OSI Shortcomings → TCP/IP Model
+
+```
+OSI has 7 layers. Layers 5, 6, 7 blur together in practice.
+Hard to argue where session ends and presentation begins.
+Real implementations don't cleanly separate them.
+
+TCP/IP model simplifies to 4 layers:
+  Application     (OSI layers 5 + 6 + 7 combined)
+  Transport       (OSI layer 4 — TCP/UDP)
+  Internet        (OSI layer 3 — IP)
+  Data Link       (OSI layer 2 — Ethernet/WiFi)
+  (Physical layer exists but not formally part of TCP/IP model)
+
+This is what the internet actually runs on.
+When people say "the networking stack" they mean TCP/IP.
+```
+
+---
+
+## 7. Host to Host Communication
+
+### MAC Address — Layer 2
+
+```
+Every network interface card (NIC) has a unique MAC address.
+48 bits = 6 bytes.
+Example: 00:00:5e:00:53:af
+
+MAC is how machines talk on the SAME local network.
+
+Problem: A sends a frame to B's MAC.
+  Message broadcast to everyone on the network.
+  B accepts it. C, D ignore it.
+  Works fine for small networks.
+  Scales TERRIBLY — millions of machines = everyone gets everything.
+  Need something better for routing across networks.
+```
+
+### IP Address — Layer 3
+
+```
+IP = Internet Protocol address.
+Layer 3 property. Set automatically (DHCP) or statically.
+
+IPv4: 4 bytes = 32 bits.
+Written as: a.b.c.d  (e.g. 192.168.1.3)
+
+Two parts:
+  Network portion  → identifies which network
+  Host portion     → identifies which host within that network
+
+Format: a.b.c.d/x
+  x = number of bits used for network portion.
+  Remaining bits = host portion.
+
+Example: 192.168.254.0/24
+  First 24 bits (3 bytes) = network: 192.168.254
+  Last 8 bits (1 byte)    = host: 0–255
+  Supports 2^8 = 256 hosts per network.
+  2^24 = 16,777,216 possible networks.
+
+This is called a SUBNET.
+```
+
+### Subnet Mask
+
+```
+Subnet mask encodes the network/host split as a bitmask.
+
+/24 → 255.255.255.0
+  Binary: 11111111.11111111.11111111.00000000
+  1s = network bits, 0s = host bits.
+
+How to check if two IPs are on the same network:
+  Apply subnet mask to both IPs (bitwise AND).
+  If results match → same network → communicate directly.
+  If results differ → different network → must go via gateway.
+
+Example:
+  192.168.1.3 & 255.255.255.0 = 192.168.1.0
+  192.168.1.2 & 255.255.255.0 = 192.168.1.0
+  Same! → direct communication. No routing needed.
+
+  192.168.1.3 & 255.255.255.0 = 192.168.1.0
+  192.168.2.2 & 255.255.255.0 = 192.168.2.0
+  Different! → must go through default gateway.
+```
+
+### Default Gateway
+
+```
+Gateway = router at the edge of your local network.
+Has an IP address on your subnet.
+Every host must know its gateway's IP.
+
+Decision process (made by every host on every send):
+  Apply subnet mask to my IP and destination IP.
+  Same network? → send directly (ARP to get MAC, send frame).
+  Different network? → send to gateway IP (gateway handles routing).
+
+Example:
+  My IP:       192.168.1.3
+  Destination: 192.168.1.2  → same /24 subnet → send direct
+  Destination: 192.168.2.2  → different subnet → send to gateway 192.168.1.100
+  Gateway forwards to network 192.168.2.0, finds host .2.
+```
+
+---
+
+## 8. Ports — Layer 4
+
+```
+IP gets you to the right HOST.
+But a host runs many apps simultaneously.
+How does the OS know which app gets which packet?
+
+Answer: PORTS.
+
+Port = 16-bit number (0–65535).
+Identifies a specific application/process on a host.
+
+Well-known ports:
+  Port 80   → HTTP
+  Port 443  → HTTPS
+  Port 22   → SSH
+  Port 53   → DNS
+  Port 5432 → PostgreSQL
+  Port 3306 → MySQL
+
+Full network address of an application:
+  IP address + Port = socket address
+  192.168.1.3:443  → HTTPS server on this host
+  192.168.1.3:22   → SSH server on this host
+
+You can send HTTP to port 80, SSH to port 22, DNS to port 53
+all to the same server simultaneously.
+OS demultiplexes by port → delivers to correct process.
+```
+
+---
+
+## 9. Full Addressing Summary
+
+```
+Problem                    Solution              Layer
+─────────────────────────────────────────────────────────
+Find a host locally        MAC address           L2
+Route between networks     IP address            L3
+Find the right app/process Port number           L4
+
+Complete identification of a network conversation:
+  Source IP + Source Port + Dest IP + Dest Port + Protocol
+  = 5-tuple → uniquely identifies one connection
+  e.g. 192.168.1.3:54231 → 93.184.216.34:443 TCP
+```
+
+---
+
+## 10. Summary Table
+
+```
+Concept          Key Point
+─────────────────────────────────────────────────────────────────
+OSI 7 layers     Standard model separating networking concerns
+TCP/IP 4 layers  Practical simplification used by the internet
+MAC address      L2 — unique hardware ID, local network only
+IP address       L3 — logical address, routable across networks
+Subnet           Network + host portions of an IP address
+Subnet mask      Bitmask to determine if two IPs are on same network
+Default gateway  Router that handles traffic to other networks
+Port             L4 — identifies which app on a host gets the packet
+Segment          TCP/UDP data unit (L4)
+Packet           IP data unit (L3)
+Frame            Ethernet data unit (L2)
+Switch           L2 device — forwards by MAC within one network
+Router           L3 device — routes by IP between networks
+L4 load balancer Routes by IP + port, doesn't read app data
+L7 load balancer Reads HTTP — routes by URL, headers, cookies
+```
+
+---
+
+## 11. One-Line Interview Answers
+
+**"What is the OSI model?"**
+A 7-layer framework standardising how network communication works — each layer has a specific responsibility and communicates only with adjacent layers, enabling independent innovation at each level.
+
+**"What is the difference between MAC and IP?"**
+MAC is a hardware address (L2) unique to each NIC, used for communication within the same local network. IP is a logical address (L3) that enables routing between different networks across the internet.
+
+**"What is a subnet mask?"**
+A bitmask that separates the network and host portions of an IP address — ANDing two IPs with the same mask reveals whether they're on the same network (direct communication) or need routing via a gateway.
+
+**"What is a default gateway?"**
+A router on your local subnet that forwards traffic destined for other networks — hosts check subnet membership first and send to the gateway only when the destination is on a different network.
+
+**"What are ports?"**
+16-bit numbers (L4) that identify specific applications on a host — IP gets a packet to the right machine, ports get it to the right process (HTTP=80, HTTPS=443, SSH=22).
+
+**"What is a 5-tuple?"**
+Source IP + source port + destination IP + destination port + protocol — uniquely identifies one network connection, used by firewalls, NAT, and load balancers to track and route flows.

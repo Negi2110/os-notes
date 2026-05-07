@@ -1,0 +1,385 @@
+# UDP & TCP — Complete Interview Study Notes
+
+---
+
+## UDP — User Datagram Protocol
+
+### Core Concepts
+
+UDP stands for User Datagram Protocol. It operates at Layer 4 (Transport layer). IP handles host-to-host delivery, but UDP adds the ability to address individual processes on a host using ports.
+
+**Key properties:**
+- No connection required before sending — fire-and-forget model
+- Stateless: server stores zero knowledge about clients between datagrams
+- 8-byte header only (source port, dest port, length, checksum) — extremely small
+- No guarantee of delivery, ordering, or duplicate prevention
+- Prior communication not required (double edge sword — simple but insecure)
+
+---
+
+### Multiplexing and Demultiplexing (UDP)
+
+IP delivers data to a host. But a host runs many apps simultaneously. Ports let UDP route data to the right process.
+
+- Sender multiplexes: all its apps funnel their data into UDP datagrams tagged with their source port
+- Receiver demultiplexes: reads destination port, hands the datagram to the right app
+- Source port is essential so the responder knows where to reply. Example: App1 on 10.0.0.1 sends to AppX on 10.0.0.2 at destination port 53 (DNS) using source port 5555. The reply comes back addressed to port 5555.
+
+---
+
+### UDP Use Cases
+
+- **Video streaming** — a dropped frame is better skipped than retransmitted; retransmission would cause visible lag
+- **DNS** — tiny request + tiny response, fits in one datagram; TCP handshake overhead not worth it
+- **VPN** — tunnels that add their own reliability layer on top of UDP
+- **WebRTC** — real-time video/audio calls; this is exactly why SyncSpace's voice rooms (PeerJS) use WebRTC/UDP
+
+---
+
+### UDP Pros
+
+- Simple protocol — easy to implement, small code footprint
+- 8-byte header means small datagrams and less bandwidth consumed
+- Stateless — low memory on server (no connection state to maintain per client)
+- Low latency — no handshake, no ordering wait, no retransmission delay
+- Consumes less memory (no state stored in server/client)
+
+---
+
+### UDP Cons
+
+- No acknowledgement — sender never knows if the datagram arrived
+- No guaranteed delivery — packets can vanish silently
+- Connection-less — anyone can send a datagram to your port without prior handshake; easy to spoof
+- No flow control
+- No congestion control
+- No ordered packets — application must handle reordering if it cares
+- Security — can be easily spoofed
+
+---
+
+### UDP Summary
+
+UDP is a simple Layer 4 protocol. It uses ports to address processes. It is stateless. That's it — no more, no less.
+
+---
+
+### Interview Questions — UDP
+
+**Q: Why is UDP called a "Layer 4" protocol even though it doesn't provide reliable delivery?**
+
+Layer 4 (Transport) is defined by its ability to address individual processes/applications within a host using ports — not by reliability. TCP adds reliability at the same layer. UDP still multiplexes and demultiplexes via ports, fulfilling the transport layer's core job.
+
+---
+
+**Q: If UDP is unreliable, why would WebRTC use it for video calls?**
+
+For real-time media, a slightly degraded frame delivered now is far better than a perfect frame delivered 200ms late. TCP's retransmission mechanism would cause jitter and stalls. Applications like WebRTC implement their own thin reliability layer (SRTP/RTCP) on top of UDP only where truly needed.
+
+---
+
+**Q: What does "stateless" mean for UDP and why does it matter for scalability?**
+
+Stateless means the server stores no per-client session data. Each datagram is completely self-contained. This means a UDP server can handle vastly more simultaneous senders without per-connection memory cost — critical for DNS servers that handle millions of queries per second.
+
+---
+
+**Q: Why does a UDP datagram need a source port?**
+
+So the recipient knows where to send the response. IP gives us the source IP for the host, and the source port pinpoints the specific application or process on that host that is waiting for the reply.
+
+---
+
+**Q: What is the difference between multiplexing and demultiplexing in UDP?**
+
+Multiplexing is what the sender does — it takes data from multiple applications and bundles each into a UDP datagram tagged with the appropriate source port. Demultiplexing is what the receiver does — it reads the destination port and routes each incoming datagram to the correct application process.
+
+---
+
+---
+
+## TCP — Transmission Control Protocol
+
+### Core Concepts
+
+TCP stands for Transmission Control Protocol. It is also Layer 4, but unlike UDP (a firehose), TCP controls the transmission — rate, ordering, and delivery.
+
+**Key properties:**
+- Connection-oriented: must establish a connection before any data flows
+- Stateful: both sides maintain state about the connection
+- 20-byte minimum header (can extend to 60 bytes with options)
+- A connection is uniquely identified by 4 properties: SourceIP + SourcePort + DestIP + DestPort
+- Segments are sequenced, ordered, acknowledged, and retransmitted if lost
+- Requires handshake
+
+---
+
+### TCP Use Cases
+
+- Reliable communication
+- Remote shell (SSH)
+- Database connections (PostgreSQL, MySQL)
+- Web communications (HTTP/HTTPS)
+- Any bidirectional communication where correctness matters more than speed
+- SyncSpace's backend uses TCP for all client-server WebSocket connections (Socket.io runs over TCP)
+
+---
+
+### TCP Connection
+
+- A connection lives at Layer 5 (Session layer) conceptually — it is an agreement between client and server to communicate
+- Identified by 4 properties: SourceIP, SourcePort, DestinationIP, DestinationPort
+- Represented as a socket — in Linux a socket is a file descriptor (an integer). Everything in Linux is a file, including sockets
+- You cannot send data outside of an established connection
+- Sometimes called a socket or file descriptor
+- Can be shared during fork (child process inherits parent's file descriptors including sockets)
+- Segments are sequenced, ordered, acknowledged, and lost segments are retransmitted
+
+---
+
+### TCP Multiplexing and Demultiplexing
+
+- IP targets hosts only
+- Hosts run many apps each with different requirements
+- Ports identify the app or process
+- Sender multiplexes all its apps into TCP connections
+- Receiver demultiplexes TCP segments to each app based on connection pairs (the full 4-tuple, not just destination port)
+- This is the key difference from UDP: TCP demultiplexes by the entire 4-tuple, so the same port 80 on a server can handle thousands of simultaneous clients because each has a different source IP/port
+
+---
+
+### Connection Establishment — Three-Way Handshake
+
+Scenario: App1 on 10.0.0.1 wants to send data to AppX on 10.0.0.2.
+
+**Step 1:** App1 sends SYN to AppX to synchronize sequence numbers. (e.g. SYN with seq=22)
+
+**Step 2:** AppX sends SYN/ACK back to synchronize its own sequence number. (e.g. SYN/ACK with seq=5000, ack=23)
+
+**Step 3:** App1 ACKs AppX's SYN. (e.g. ACK with ack=5001)
+
+After this three-way handshake, both sides have a file descriptor / socket representing the established connection. A connection identifier (file descriptor) is created on both the client and server side.
+
+---
+
+### Sending Data
+
+- App1 encapsulates data in a segment and sends it to AppX
+- AppX acknowledges the segment with an ACK
+- Key question: Can App1 send a new segment before the ACK for the old segment arrives? YES — this is the sliding window. The sender can have multiple unacknowledged segments in flight simultaneously. This dramatically improves throughput on high-latency links.
+
+---
+
+### Acknowledgment — Cumulative ACK
+
+- App1 sends segments 1, 2, and 3 to AppX
+- AppX acknowledges all of them with a single ACK 3 — this is cumulative acknowledgment
+- The receiver doesn't have to send one ACK per segment; one ACK can cover multiple received segments
+
+---
+
+### Lost Data and Retransmission
+
+- App1 sends segments 1, 2, and 3
+- Segment 3 is lost in transit
+- AppX receives 1 and 2, sends ACK 2
+- App1 notices: no ACK for segment 3 received (timeout or 3 duplicate ACKs)
+- App1 resends segment 3
+- AppX sends ACK 3 confirming receipt
+- This guarantees delivery — the protocol itself handles retransmission, not the application
+
+---
+
+### Closing a Connection — Four-Way Handshake
+
+App1 wants to close the connection:
+
+**Step 1:** App1 sends FIN to AppX
+
+**Step 2:** AppX sends ACK
+
+**Step 3:** AppX sends its own FIN (when it's done sending)
+
+**Step 4:** App1 sends ACK
+
+This is a four-way handshake. Each direction is closed independently — half-close is possible: one side can stop sending while the other side continues.
+
+---
+
+### TCP Summary
+
+- Stands for Transmission Control Protocol
+- Layer 4 protocol
+- Controls the transmission unlike UDP which is a firehose
+- Introduces the Connection concept
+- Provides retransmission, acknowledgement, and guaranteed delivery
+- Stateful — the connection has state on both ends
+
+---
+
+### Interview Questions — TCP
+
+**Q: Why does TCP need a 3-way handshake instead of just 2?**
+
+A two-way handshake would let the client confirm the server is reachable, but the server wouldn't know its SYN/ACK actually reached the client. The third step (client's final ACK) confirms to the server that the full round trip works and that both sides' sequence numbers are synchronized before any data flows. Without it, the server could allocate resources for a connection that the client never actually confirmed.
+
+---
+
+**Q: How does TCP demultiplex when multiple clients all connect to port 80?**
+
+TCP uses the full 4-tuple (SourceIP, SourcePort, DestIP, DestPort) to identify each unique connection — not just the destination port. Every client has a different ephemeral source port, so the OS can dispatch each incoming segment to the correct socket even though all arrive on the same destination port 80.
+
+---
+
+**Q: What is the sliding window and why does it matter?**
+
+The sliding window lets the sender transmit multiple unacknowledged segments before it must pause and wait for an ACK. Without it, TCP would send one segment, wait for ACK, then send the next — terrible performance on high-latency links. The window size is advertised by the receiver and controls how many bytes can be in-flight. It is dynamically adjusted for flow control and congestion control.
+
+---
+
+**Q: What is a socket in the OS sense?**
+
+A socket is a file descriptor — an integer representing an open communication endpoint. In Linux, sockets are treated as files: you can read(), write(), and close() them. A process owns its sockets and can pass them to child processes via fork(). The kernel manages the underlying network buffers associated with the socket.
+
+---
+
+**Q: Why is TCP called stateful and what state does it track?**
+
+Both endpoints must remember: the current sequence number, the expected next sequence number from the other side, the receiver's window size, the connection state machine (SYN_SENT → ESTABLISHED → FIN_WAIT → CLOSED), and buffered unacknowledged segments awaiting retransmission. This state is why TCP connections consume memory per connection, unlike UDP.
+
+---
+
+**Q: What happens if a segment is lost and never retransmitted?**
+
+TCP detects loss either via a retransmission timeout (RTO) or via 3 duplicate ACKs (fast retransmit). On detection, the lost segment is resent. If retransmissions repeatedly fail, TCP eventually gives up and the connection is reset with a RST or times out, returning an error to the application.
+
+---
+
+---
+
+## Sockets, Connections, and Queues
+
+### Socket
+
+- When a process listens on an IP/Port, the kernel produces a socket
+- A socket is a file in Linux — represented by a file descriptor (integer)
+- The process owns the socket
+- Can be shared during fork — child inherits parent's file descriptors including sockets
+- `#include <sys/socket.h>` — `int listen(int sockfd, int backlog);`
+
+---
+
+### SYN Queue and Accept Queue
+
+When a socket is created (via `listen(sockfd, backlog)`), the kernel creates two internal structures:
+
+**SYN Queue (Incomplete connections):**
+- Stores incoming SYN packets
+- Holds half-open connections where SYN has arrived but the 3-way handshake is not yet complete
+- If this fills up (e.g. in a SYN flood attack), new SYNs are dropped
+- Size is bounded; overflow = dropped connections
+
+**Accept Queue (Complete connections):**
+- Stores fully established connections waiting for the application to call `accept()`
+- Size is determined by the backlog parameter passed to `listen()`
+- If the application is slow to call `accept()`, this queue fills up and new connections are dropped
+
+Important note: These are technically not queues but hash tables — the OS looks up connections by 4-tuple for O(1) dispatch.
+
+---
+
+### Connection, Receive, and Send Queue
+
+Once a connection is moved from the accept queue to the process (via `accept()`), it gets:
+
+**Receive buffer:** Data the kernel has received from the network but the application hasn't read yet. When this fills up, the TCP window advertised to the sender shrinks to zero, pausing the sender — this is flow control.
+
+**Send buffer:** Data the application has written but TCP hasn't transmitted yet, or has transmitted but not yet received an ACK for. Unacknowledged data must be retained for potential retransmission.
+
+---
+
+### Interview Questions — Sockets and Queues
+
+**Q: What happens when the accept queue is full?**
+
+New fully-established connections get dropped (or a RST is sent). The client's TCP stack will retry, but if the server doesn't process connections fast enough (slow `accept()` loop), clients experience connection timeouts. This is a common production issue when application logic inside the accept loop is too slow.
+
+---
+
+**Q: What is a SYN flood attack and how does the SYN queue relate to it?**
+
+An attacker sends large volumes of SYN packets with spoofed source IPs. The server adds each to the SYN queue and sends SYN/ACK, but the final ACK never arrives (the spoofed host doesn't respond). The SYN queue fills up, blocking legitimate connections from getting in. Defense: SYN cookies — the server encodes connection state into the SYN/ACK sequence number itself instead of storing it in the SYN queue, so no queue entry is needed. The final ACK carries enough information to reconstruct the connection.
+
+---
+
+**Q: Why can a child process inherited from fork() still handle a client connection?**
+
+Fork duplicates the parent's entire file descriptor table. The accepted socket fd is a valid, open file descriptor in the child too. Traditional multi-process servers (Apache prefork model) use this: the parent accepts connections and forks a worker per connection. The worker inherits the socket fd and handles the client while the parent loops back to accept more.
+
+---
+
+**Q: How does the receive buffer implement flow control in TCP?**
+
+TCP segments include a "window size" field that advertises how much free space the receiver's receive buffer currently has. The sender must not have more unacknowledged data in-flight than this window size. When the application reads slowly and the buffer fills up, the advertised window shrinks. When it hits zero, the sender pauses completely. Once the application drains the buffer via read(), the window opens again and the sender resumes. This end-to-end mechanism is called flow control.
+
+---
+
+---
+
+## UDP vs TCP — Side-by-Side Comparison
+
+| Property | UDP | TCP |
+|---|---|---|
+| Connection | None required | Required (3-way handshake) |
+| State | Stateless | Stateful |
+| Header size | 8 bytes | 20–60 bytes |
+| Delivery | Not guaranteed | Guaranteed |
+| Ordering | None | Sequenced and ordered |
+| Retransmission | No | Yes |
+| Flow control | No | Yes (sliding window) |
+| Congestion control | No | Yes (AIMD) |
+| Latency | Very low | Higher |
+| Demux by | Destination port only | Full 4-tuple |
+| Use cases | DNS, video, WebRTC, VPN | HTTP, SSH, databases, file transfer |
+
+---
+
+### Interview Questions — UDP vs TCP
+
+**Q: If you were building SyncSpace's real-time collaborative editor, would you use TCP or UDP for document operations?**
+
+TCP via WebSockets (which Socket.io uses). Document edits must arrive reliably and in order — missing or reordered operations corrupt the document state. The slight latency overhead of TCP is acceptable for text editing. The voice rooms feature (PeerJS/WebRTC) correctly uses UDP because audio/video can tolerate some packet loss but absolutely cannot tolerate delay.
+
+---
+
+**Q: Can you build reliable delivery on top of UDP?**
+
+Yes. QUIC (the protocol under HTTP/3) does exactly this. It runs over UDP but implements its own reliable ordered streams, connection state, and congestion control entirely in user space. Benefits over TCP: avoids head-of-line blocking (one slow stream in TCP blocks all streams on the connection), supports 0-RTT reconnection (faster connection re-establishment), and connection IDs survive IP address changes (like switching from Wi-Fi to LTE without dropping the connection).
+
+---
+
+**Q: Why is the "connection-less" nature of UDP called a "double-edged sword"?**
+
+It's a sword because: on the pro side, no connection overhead means lower latency, less memory, and simpler implementation. On the con side, anyone can send a datagram to your port without prior handshake, making IP spoofing trivial, enabling UDP amplification DDoS attacks (send small request with spoofed source IP, server sends large response to victim), and making it impossible to authenticate the sender at the protocol level.
+
+---
+
+**Q: HTTP/1.1 and HTTP/2 run over TCP. HTTP/3 runs over UDP. Why the switch?**
+
+TCP has a fundamental head-of-line blocking problem: if one segment is lost, all subsequent data in the stream must wait for retransmission before being delivered to the application, even if that data belongs to a completely independent request. HTTP/2 multiplexes multiple streams over one TCP connection, which makes this worse — one lost packet stalls all streams. HTTP/3 (QUIC) runs over UDP and implements per-stream reliability independently, so a lost packet only stalls the one stream it belongs to, not the others.
+
+---
+
+---
+
+## Quick Reference — Key Numbers to Memorize
+
+- UDP header: 8 bytes
+- TCP header: 20 bytes minimum, up to 60 bytes
+- TCP 3-way handshake: SYN → SYN/ACK → ACK
+- TCP 4-way close: FIN → ACK → FIN → ACK
+- Connection identified by: 4-tuple (SrcIP, SrcPort, DstIP, DstPort)
+- DNS default port: 53 (UDP)
+- HTTP port: 80 (TCP)
+- HTTPS port: 443 (TCP)
+- SSH port: 22 (TCP)

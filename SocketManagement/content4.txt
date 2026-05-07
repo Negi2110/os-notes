@@ -1,0 +1,477 @@
+# Reading & Sending Data, Socket Programming Patterns, Asynchronous IO — Complete Interview Study Notes
+
+---
+
+## Reading and Sending Data — Receive vs Send Buffers
+
+### How data flows when a client sends data
+
+When a client sends data on a TCP connection, here is exactly what happens step by step:
+
+Step 1: Client sends data on the connection.
+
+Step 2: Kernel receives the data and places it in the connection's receive queue (receive buffer).
+
+Step 3: Kernel sends an ACK back to the client. The ACK may be delayed slightly (delayed ACK optimization) to batch acknowledgements. The ACK also advertises the updated window size — how much free space remains in the receive buffer.
+
+Step 4: The application calls `read()` to copy data from the receive buffer into its own memory (user space).
+
+### Receive Buffer — diagram description
+
+```
+Client  ---data--->  [Receive Buffer: |filled|empty|empty|empty|...]
+                              |
+                          Kernel ACKs
+                              |
+                         read() called
+                              |
+                         Copy to PID (process memory)
+```
+
+The receive buffer sits in kernel space. The application does not directly access it — it copies data out via the `read()` system call. This copy from kernel space to user space is an important cost.
+
+---
+
+### Send Buffer
+
+When the application wants to send data:
+
+Step 1: Application calls `send()` or `write()`.
+
+Step 2: Data is copied from the application's memory (user space) into the kernel's send buffer.
+
+Step 3: TCP picks data from the send buffer and transmits it to the remote side.
+
+Step 4: Data stays in the send buffer until an ACK is received confirming delivery. Only then is it removed — because until ACK, it may need to be retransmitted.
+
+### Send Buffer — diagram description
+
+```
+PID (process memory)
+        |
+    send() called
+        |
+    Copy to Send Buffer (kernel space)
+        |
+    TCP transmits from Send Buffer
+        |
+    ACK received -> data removed from Send Buffer
+```
+
+---
+
+### Problems with Reading and Sending
+
+Three common failure modes:
+
+**1. Backend doesn't read fast enough**
+- If the application is slow to call `read()`, the receive buffer fills up
+- The kernel advertises a smaller and smaller window size in outgoing ACKs
+- Eventually the window hits zero and the client is forced to stop sending
+- This is flow control working correctly, but from the client's perspective, its send speed is being throttled by a slow server
+
+**2. Receive queue is full**
+- When the receive buffer is completely full, the TCP window advertised to the sender is zero
+- The sender pauses completely
+- If the application never drains the buffer (e.g. it's stuck on CPU work), the connection effectively freezes
+
+**3. Client slows down**
+- The natural consequence of the above — when the server's receive buffer fills, the client slows its send rate to match the window
+- This is correct TCP behavior but it means your server's read speed directly caps your client's throughput
+
+---
+
+## Socket Programming Patterns
+
+### Pattern 1: Single Listener / Single Worker Thread
+
+- One thread does everything: listens, accepts connections, and reads data
+- Used by Node.js (single-threaded event loop model)
+- The single thread handles the listener socket, the acceptor (picking up new connections), and the reader (reading data from connections)
+- Works because Node.js uses non-blocking I/O (async/event-driven) — the thread never actually blocks waiting for data; it registers interest and gets called back
+
+Pros: Simple, no concurrency bugs, no locking needed.
+
+Cons: Only uses one CPU core. CPU-bound work blocks all I/O. Bad for compute-heavy workloads.
+
+Example: Node.js with libuv — single thread, epoll-based event loop.
+
+---
+
+### Pattern 2: Single Listener / Multiple Worker Threads
+
+- One dedicated listener/acceptor thread accepts connections
+- Hands connections off to a pool of reader/worker threads
+- Each worker thread handles a subset of connections
+- Used by servers like Memcached (historically)
+
+Pros: Can utilize multiple CPU cores for reading/processing. The listener is never blocked by worker work.
+
+Cons: Shared accept queue means all workers may compete. Need synchronization when passing connections between threads.
+
+---
+
+### Pattern 3: Single Listener / Multiple Worker Threads with Load Balancing
+
+- Same as Pattern 2, but the acceptor/listener thread also does message-level load balancing
+- Instead of handing off the connection itself, it reads messages and distributes them to worker threads
+- Worker threads only process messages, not connections
+
+Pros: Better load distribution — a slow client connection doesn't hog one worker.
+
+Cons: The listener/acceptor/reader becomes a bottleneck since it's doing more work. More complex.
+
+---
+
+### Pattern 4: Multiple Acceptor Threads, Single Socket (Nginx model)
+
+- One listening socket shared across multiple threads (or processes)
+- Multiple threads all call `accept()` on the same socket
+- Used by Nginx (master process + worker processes, each calling accept on the shared socket)
+
+Pros: Simple to implement — just fork workers and they all inherit the socket. Works well with process-based isolation.
+
+Cons: Thundering herd — when a connection arrives, all threads/processes wake up to compete for it. Only one wins. The rest go back to sleep. Wasted context switches. Mitigated by EPOLLEXCLUSIVE in modern Linux.
+
+---
+
+### Pattern 5: Multiple Listeners on the Same Port (SO_REUSEPORT)
+
+- Each thread/process has its own completely independent socket
+- All sockets listen on the same IP/port pair
+- Kernel load-balances incoming connections across all sockets using SO_REUSEPORT
+- Each socket has its own SYN queue and accept queue — no sharing, no contention
+
+Pros: True parallel accept with zero lock contention. Each worker is woken only for its own socket. Best for high-connection-rate servers.
+
+Cons: Slightly more complex setup. The kernel's load balancing is hash-based — not perfectly even. A slow worker accumulates connections in its queue.
+
+---
+
+## Asynchronous IO — Non-Blocking Reads and Writes
+
+### Blocking Operations (the problem)
+
+By default, all socket operations are blocking:
+
+- `read()` blocks when there is no data in the receive buffer — the process is put to sleep
+- `accept()` blocks when there are no connections in the accept queue — the process is put to sleep
+- `write()` / `send()` blocks when the send buffer is full
+
+When a process blocks, the OS performs a context switch — the process is descheduled and another runs. Context switches are expensive. If you have 10,000 connections and each has its own thread blocked on `read()`, you have 10,000 threads, massive memory usage, and constant context switching.
+
+### Blocking code example (the naive approach)
+
+```c
+int main() {
+    for (int i = 0; i < 10; i++) {
+        // read from connection
+        read(connections[i], &buf);
+    }
+    return 0;
+}
+```
+
+Problem: If connection 3 has no data, the process blocks on `read(connections[3], &buf)`. Connections 4 through 10 are starved even if they have data ready. The process cannot move its program counter forward. All connections are stalled waiting for one slow connection.
+
+---
+
+### Asynchronous I/O — The Solution
+
+Two approaches to async I/O:
+
+**Ready-based approach (Readiness notification)**
+- Ask the OS to tell you when a file descriptor is ready (has data to read / has space to write)
+- When it is ready, your process calls read/write — which then completes without blocking because data is already there
+- System calls: `select`, `poll`, `epoll` (Linux), `kqueue` (BSD/macOS)
+
+**Completion-based approach**
+- Ask the OS (or a worker thread) to perform the blocking I/O for you
+- When it is completed, the OS notifies you
+- System calls: IOCP (Windows), `io_uring` (Linux)
+
+---
+
+## select (Polling)
+
+### How select works
+
+- You give select a collection (set) of file descriptors to monitor
+- `select()` blocks until at least one of them is ready (has data, can write, or has an error)
+- When it returns, you loop through all file descriptors and check which ones are ready using `FD_ISSET()`
+- For each ready fd, you call `read()` / `write()` / `accept()` — which now completes immediately because the data is already there
+
+### select code flow
+
+```c
+int main() {
+    // select an array of collections
+    // blocks until at least one connection has something to read
+    select(connections);
+
+    // if we are here there is something to read but we need to check all
+    for (int i = 0; i < 10; i++) {
+        if (FD_ISSET(connections[i])) { // check if its ready
+            // read from connection
+            read(connections[i], &buf);
+        }
+    }
+    return 0;
+}
+```
+
+The process's program counter advances past `select()` only when at least one fd is ready. It then loops all connections and reads only the ready ones.
+
+### select Pros
+
+- Avoids reading from unready (empty) resources — no unnecessary blocking
+- Async — one thread can manage many connections
+
+### select Cons
+
+- O(n) loop — you must check every file descriptor to find the ready ones, even if only 1 of 10,000 is ready
+- Lots of copying from kernel to user space — the fd_set bitmask is copied back and forth on every call
+- Supports a fixed maximum number of file descriptors (typically 1024 on Linux — `FD_SETSIZE`)
+- You must rebuild the fd_set on every call
+
+---
+
+## epoll (Eventing)
+
+### How epoll works — the key improvement over select
+
+epoll maintains an interest list inside the kernel. You register your file descriptors once, and the kernel continuously tracks which ones have events. You don't re-register on every call.
+
+Three system calls:
+
+1. `epoll_create()` — creates an epoll instance in the kernel, returns a file descriptor for it
+2. `epoll_ctl(epfd, EPOLL_CTL_ADD, fd, event)` — add a file descriptor to the interest list
+3. `epoll_wait(epfd, events, maxevents, timeout)` — block until events occur; returns only the ready file descriptors in the events array
+
+### epoll step-by-step flow
+
+Step 1: Call `epoll_create()` to create the epoll instance. This lives in the kernel.
+
+Step 2: For each connection fd, call `epoll_ctl(add, connections)` to register it in the kernel's interest list.
+
+Step 3: Enter the event loop. Call `epoll_wait()` — this blocks until one or more fds are ready.
+
+Step 4: Kernel has been monitoring all fds. When data arrives on con4 and con9, the kernel adds them to the ready list.
+
+Step 5: `epoll_wait()` returns. The events array contains only the ready fds: [con4, con9]. Events count = 2.
+
+Step 6: Loop only through the returned events (2 iterations, not 10,000). Read from each ready fd — non-blocking because data is already there.
+
+Step 7: Go back to `epoll_wait()`. Repeat.
+
+### epoll code structure
+
+```c
+int main() {
+    // create an interest list in the kernel
+    // get back a file descriptor for the epoll instance
+    e = epoll_create(connections);
+    
+    // add file descriptors to the interest list
+    epoll_ctl(add, connections);
+    
+    while(true) {
+        // wait on the epoll
+        // blocks until events occur
+        epoll_wait(e, &events, &count);
+        
+        // we ONLY get the ready file descriptors back
+        for (int i = 0; i < count; i++) {
+            read(events[i].fd.read(), &buf);
+        }
+    }
+    return 0;
+}
+```
+
+### epoll vs select comparison
+
+| Property | select | epoll |
+|---|---|---|
+| Interest list registration | Every call | Once via epoll_ctl |
+| Returns | All fds (must check each) | Only ready fds |
+| Time complexity | O(n) per call | O(1) per event |
+| Max fds | Fixed (1024) | Unlimited |
+| Kernel-user copy | fd_set copied every call | Only ready events copied |
+| Platform | Cross-platform | Linux only |
+
+### epoll Drawbacks
+
+- Complex to use correctly — level-triggered vs edge-triggered modes are a common source of bugs
+  - Level-triggered (LT): epoll_wait keeps notifying as long as data is in the buffer (default, easier)
+  - Edge-triggered (ET): epoll_wait notifies only once when new data arrives; you must drain the entire buffer before returning, or you miss the notification
+- Linux only — not portable to macOS (use kqueue) or Windows (use IOCP)
+- Too many syscalls — epoll_create, epoll_ctl, epoll_wait are all syscalls with overhead
+- Doesn't work on regular files (only sockets, pipes, and other truly async fds) — file I/O always blocks at the kernel level
+
+---
+
+## io_uring
+
+### What is io_uring?
+
+io_uring is a completion-based async I/O interface introduced in Linux 5.1. Unlike epoll (readiness-based), io_uring uses a completion model — you submit I/O jobs and the kernel does them for you, notifying you when done.
+
+### How io_uring works
+
+There is a shared memory region between the kernel and user process, divided into two ring buffers:
+
+**Submission Queue (SQ):**
+- The user process writes I/O jobs here (read this fd, write this data, accept on this socket)
+- Process writes to the tail of the submission queue
+- Kernel pops jobs from the head of the submission queue
+
+**Completion Queue (CQ):**
+- The kernel executes the jobs and writes results here when done
+- Kernel writes completed results to the tail of the completion queue
+- User process reads completed results from the head of the completion queue
+
+### io_uring flow
+
+```
+User Process:
+  writes job (read/write/accept) to Submission Queue tail
+                    |
+              Shared Memory
+           [Submission Queue] [Completion Queue]
+                    |
+Kernel:
+  pops job from Submission Queue head
+  executes the I/O
+  writes result to Completion Queue tail
+                    |
+User Process:
+  reads result from Completion Queue head
+```
+
+No syscalls needed during normal operation — the kernel polls the submission queue from a kernel thread. This eliminates the epoll_wait syscall overhead entirely.
+
+### io_uring Pros
+
+- Fast — minimal syscall overhead, true async for both network and file I/O
+- Non-blocking — process never blocks waiting for I/O
+- Works on files — unlike epoll, io_uring supports regular file I/O asynchronously
+- Supports batching — submit many jobs at once
+
+### io_uring Cons
+
+- Security is a major concern — shared memory between kernel and user process creates attack surface; multiple CVEs have been found
+- Google has disabled io_uring in Chrome, Android, and Google production servers due to security concerns
+- More complex programming model
+- Relatively new — ecosystem and tooling less mature than epoll
+
+---
+
+## Cross-Platform: libuv and Node.js
+
+### The problem
+
+epoll only works on Linux. kqueue only works on macOS/BSD. IOCP only works on Windows. io_uring only works on newer Linux kernels. Writing portable async I/O code is painful.
+
+### libuv — Node.js's solution
+
+Node.js solves this through libuv, a cross-platform async I/O library that abstracts over the platform-specific mechanisms:
+
+- On Linux: uses epoll for network I/O
+- On macOS/BSD: uses kqueue
+- On Windows: uses IOCP
+- For file I/O (which epoll/kqueue don't support): uses a thread pool
+
+libuv provides a unified API that covers:
+
+- TCP, UDP, TTY, Pipe, and other I/O types
+- Network I/O via platform-specific event notification (epoll / kqueue / event ports)
+- File I/O via a Thread Pool (since files can't be epoll'd)
+- IOCP on Windows
+
+This is why Node.js can claim to be non-blocking and single-threaded — the event loop runs in one thread using libuv, which in turn uses epoll/kqueue underneath. The thread pool handles file I/O in the background.
+
+---
+
+## Summary — Async IO
+
+- Some kernel syscalls are blocking — `read()`, `write()`, `accept()` all block when not ready
+- When a process blocks, it is put to sleep and a context switch occurs — expensive
+- Asynchronous I/O is the way around blocking — let the kernel notify you when I/O is ready or complete
+- Two approaches: Ready-based (select, poll, epoll, kqueue) and Completion-based (IOCP, io_uring)
+- epoll is the dominant solution on Linux for high-performance servers
+- io_uring is the future but has security concerns currently
+- libuv (used by Node.js) abstracts all of this into a cross-platform event loop
+
+---
+
+## Interview Questions — Reading/Sending, Socket Patterns, Async IO
+
+**Q: Why does a slow-reading server eventually slow down the client even though they are on different machines?**
+
+TCP flow control. The server's receive buffer fills up because the application isn't draining it fast enough. The kernel advertises a smaller and smaller window size in its ACKs. The client's TCP stack is required to respect this window — it cannot have more unacknowledged bytes in flight than the advertised window. When the window hits zero, the client stops sending entirely. The client's throughput is directly capped by the server's read rate.
+
+---
+
+**Q: What is the difference between the send buffer and the receive buffer?**
+
+The receive buffer holds data that arrived from the network but the application hasn't read yet via read(). The send buffer holds data the application has written via send() but TCP hasn't transmitted yet, or has transmitted but not yet received an ACK for. Data must stay in the send buffer until ACKed because it may need retransmission. The size of the receive buffer is what gets advertised as the TCP window to the sender.
+
+---
+
+**Q: Why does Node.js use a single thread but still handle thousands of connections?**
+
+Node.js uses libuv which uses epoll (on Linux) under the hood. The single thread never blocks — instead of calling blocking `read()`, it registers all socket fds with epoll and calls `epoll_wait()`. When data arrives on any connection, epoll_wait returns immediately with only the ready connections. The thread processes only those, then goes back to epoll_wait. No connection can block the thread because the thread never calls blocking I/O directly.
+
+---
+
+**Q: What is the thundering herd problem and how is it solved?**
+
+When multiple threads/processes all block on accept() on the same listening socket, a single incoming connection wakes all of them simultaneously. Only one wins the connection — the others go back to sleep. The wasted wake-ups and context switches are the thundering herd. Solutions: SO_REUSEPORT (each worker has its own socket, kernel wakes only one), or EPOLLEXCLUSIVE (only one epoll waiter is woken per event instead of all).
+
+---
+
+**Q: What is the difference between select and epoll?**
+
+select requires you to pass your entire fd_set on every call, the kernel scans all fds to find ready ones, and returns the modified fd_set — you then loop through all fds to find which are ready. This is O(n) and involves copying the fd_set back and forth every time. epoll maintains the interest list inside the kernel permanently. You register fds once via epoll_ctl. epoll_wait blocks until events occur and returns only the ready fds in an events array — O(1) per ready event. epoll also has no fixed fd limit, unlike select's FD_SETSIZE (1024).
+
+---
+
+**Q: What is the difference between level-triggered and edge-triggered epoll?**
+
+Level-triggered (LT, default): epoll_wait notifies you repeatedly as long as the fd has unread data. Safe and easy — if you don't read everything, you'll be notified again next call.
+
+Edge-triggered (ET): epoll_wait notifies you only once when new data arrives — only on the transition from no-data to has-data. If you don't read all the available data before calling epoll_wait again, you will never be notified about the leftover data. Requires you to read in a loop until EAGAIN. Faster (fewer notifications) but much easier to get wrong and starve connections.
+
+---
+
+**Q: What is io_uring and how does it differ from epoll?**
+
+epoll is readiness-based: it tells you when a socket is ready, but you still have to call read/write yourself (those syscalls still happen). io_uring is completion-based: you write I/O jobs into a shared submission ring, the kernel picks them up, executes the actual I/O, and writes results into a completion ring. Your process just reads completed results. This eliminates multiple syscalls (no epoll_wait + read — just check the completion ring). io_uring also works on regular files, which epoll cannot. The downside is security — shared memory between user and kernel has produced multiple exploitable vulnerabilities.
+
+---
+
+**Q: Why can't epoll monitor regular files?**
+
+Regular files on disk are always considered "ready" by the kernel — you can always attempt a read, but the read itself may block while the disk fetches data. There is no true async readiness signal for file I/O at the kernel level. epoll is designed for I/O sources that have genuine readiness states — sockets and pipes. For file I/O, the workaround is a thread pool (libuv does this) where blocking file reads happen in worker threads so the event loop thread is never blocked.
+
+---
+
+**Q: Explain how libuv makes Node.js cross-platform for async I/O.**
+
+libuv is a C library that provides a unified async I/O API. Internally it selects the best available mechanism per platform: epoll on Linux, kqueue on macOS/BSD, and IOCP on Windows for network I/O. For file I/O (which none of those support natively as async), libuv maintains a thread pool — file operations are queued as tasks, executed by pool threads, and results are posted back to the event loop. This means Node.js's single event loop thread never blocks on either network or file I/O, regardless of operating system.
+
+---
+
+**Q: Walk me through what happens when Node.js receives an HTTP request end-to-end at the OS level.**
+
+1. Node.js calls `epoll_wait()` via libuv, blocking until events occur.
+2. A client sends a TCP SYN. The kernel completes the 3-way handshake, places the connection in the accept queue.
+3. The listening socket becomes readable — epoll_wait returns with the listening socket in the events array.
+4. Node.js calls `accept()` — gets a new fd for the connection. Calls `epoll_ctl(ADD, new_fd)` to register it.
+5. Client sends HTTP request data. Kernel receives it into the connection's receive buffer. The connection fd becomes readable.
+6. epoll_wait returns with the connection fd in the events array.
+7. Node.js calls `read()` on the fd — data copies from kernel receive buffer to user space. This does not block because epoll told us data is ready.
+8. Node.js parses the HTTP request, runs your JavaScript handler, generates a response.
+9. Node.js calls `write()` or `send()` — data copies from user space into the kernel's send buffer. TCP transmits it.
+10. Node.js goes back to `epoll_wait()`.
